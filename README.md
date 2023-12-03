@@ -14,23 +14,23 @@ Eventually as more members were added to the Discord channel nominations increas
 
 ## Implementation with Python
 
-The bot was developed in Python and primarily uses two libraries for its commands, the **discordpy** and **imdbpy** libraries.
+The bot was developed in Python and primarily uses two libraries for its commands, the **discordpy** and **cinemagoer** (previously imdbpy) libraries.
 
 The commands for the bot are broken into three main categories:
 
-1. Voting commands facilitate the tallying of votes based on reactions/emojis, printing a list of movie titles to be copy/pasted into [wheelofnames.com](https://wheelofnames.com), helper commands for adding winning movies to temporary or permanent lists, as well as the ability to create a list of rollover titles for the following week for movies not in the winners list.
+1. Voting/wheel commands facilitate the tallying of votes based on reactions/emojis, printing a list of movie titles to be copy/pasted into [wheelofnames.com](https://wheelofnames.com), helper commands for adding winning movies to temporary or permanent lists, as well as the ability to create a list of rollover titles for the following week for movies not in the winners list.
 2. IMDB commands integrate with IMDB.com to run searches for specified titles against the IMDB database. Results returned may be used to add movies into a permanent list of winners, to select movies from the Top 1000 b-movies at random, or to generate trivia for the current winning movie.
 3. Utility commands are used strictly in testing/development. This includes generating sample movie titles with votes, the ability to purge messages from the testing channel, and a user command to force the bot to logout.
 
 For the purposes of documentation, the python scripts are managed in a Jupyter notebook and run from a local laptop, with future plans to run from a Raspberry Pi in order to keep the bot available around the clock.
 
-All commands are implemented through the use of python decorator functions to extend the command function in the Commands class of the **imdbpy** library, with a custom check implemented to ensure that commands are only accepted from specific channels in the testing or production Discord servers.
+All commands are implemented through the use of python decorator functions to extend the command function in the Commands class of the **discordpy** library, with a custom check implemented to ensure that commands are only accepted from specific channels in the testing or production Discord servers.
 
 ## Sample Commands
 
 The following are sample outputs from several of the basic commands.
 
-The **.tally** command tallys all votes that occurred since the previous Saturday at 10 PM, creates and saves a Matplotlib bar chart of the votes, and then submits the message to the current channel attaching the plot as an embedded image.
+The **.tally** command tallys all votes that occurred since the previous rollover of movie nominations (typically Saturday at 10 PM), creates and saves a Matplotlib bar chart of the votes, and then submits the message to the current channel attaching the plot as an embedded image.
 
 ![Tally of sample votes](/images/tally.png)
 
