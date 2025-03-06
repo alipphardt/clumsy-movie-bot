@@ -25,7 +25,7 @@ pip3 install --upgrade -r /home/pi/clumsy-movie-bot/requirements.txt
 
 Copy the clumsy-movie-bot.service file to your /lib/systemd/system folder. This will allow the app to be run on system boot
 ```bash
-cp /home/pi/clumsy-movie-bot/clumsy-movie-bot.service /lib/systemd/system
+sudo cp /home/pi/clumsy-movie-bot/clumsy-movie-bot.service /lib/systemd/system
 ```
 
 Run the following command to enable the new service
