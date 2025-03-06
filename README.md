@@ -4,18 +4,13 @@ Clone the github repo within your home directory
 git clone https://github.com/alipphardt/clumsy-movie-bot.git
 ```
 
-Open the .bashrc file within your home directory and add the following environmental variables
+Within the clumsy-movie-bot directory, create a .env file and add the following environmental variables
 ```bash
-export DISCORD_BOT_TOKEN='REPLACE_WITH_TOKEN'
-export DISCORD_MOVIES_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
-export DISCORD_TERMINAL_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
-export DISCORD_TEST_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
-export WHEEL_API_KEY='REPLACE_WITH_KEY'
-```
-
-Run the following command to load environmental variables
-```bash
-source .bashrc
+DISCORD_BOT_TOKEN='REPLACE_WITH_TOKEN'
+DISCORD_MOVIES_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
+DISCORD_TERMINAL_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
+DISCORD_TEST_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
+WHEEL_API_KEY='REPLACE_WITH_KEY'
 ```
 
 Install third party libraries
