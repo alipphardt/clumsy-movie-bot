@@ -43,9 +43,9 @@ fallen = pd.read_csv('/home/pi/clumsy-movie-bot/fallen.csv', dtype = {'Movie': s
 
 # Account/channel specific information stored as environmental variable
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
-CHANNEL_ID = os.environ['DISCORD_MOVIES_CHANNEL']
-TERMINAL_ID = os.environ['DISCORD_TERMINAL_CHANNEL']
-TEST_ID = os.environ['DISCORD_TEST_CHANNEL']
+CHANNEL_ID = int(os.environ['DISCORD_MOVIES_CHANNEL'])
+TERMINAL_ID = int(os.environ['DISCORD_TERMINAL_CHANNEL'])
+TEST_ID = int(os.environ['DISCORD_TEST_CHANNEL'])
 API_KEY = os.environ['WHEEL_API_KEY']
 
 
