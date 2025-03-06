@@ -3,6 +3,7 @@ Description=Clumsy Movie Bot
 After=multi-user.target
 
 [Service]
+EnvironmentFile=/home/pi/clumsy-movie-bot/.env
 Type=idle
 ExecStart=/usr/bin/python3 /home/pi/clumsy-movie-bot/clumsy-movie-bot.py > /home/pi/clumsy-movie-bot/bot-output.log 2>&1
 
