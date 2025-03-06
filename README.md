@@ -1,3 +1,40 @@
+## UPDATE: Setup for Raspberry Pi
+Clone the github repo within your home directory
+```bash
+git clone https://github.com/alipphardt/clumsy-movie-bot.git
+```
+
+Open the .bashrc file within your home directory and add the following environmental variables
+```bash
+export DISCORD_BOT_TOKEN='REPLACE_WITH_TOKEN'
+export DISCORD_MOVIES_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
+export DISCORD_TERMINAL_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
+export DISCORD_TEST_CHANNEL=<REPLACE_WITH_CHANNEL_NUM>
+export WHEEL_API_KEY='REPLACE_WITH_KEY'
+```
+
+Run the following command to load environmental variables
+```bash
+source .bashrc
+```
+
+Install third party libraries
+```bash
+pip3 install --upgrade -r /home/pi/clumsy-movie-bot/requirements.txt
+```
+
+Copy the clumsy-movie-bot.service file to your /lib/systemd/system folder. This will allow the app to be run on system boot
+```bash
+cp /home/pi/clumsy-movie-bot/clumsy-movie-bot.service /lib/systemd/system
+```
+
+Run the following command to enable the new service
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable clumsy-movie-bot.service
+sudo systemctl start clumsy-movie-bot.service
+```
+
 ## Background
 
 Saturday night movies via Discord have been a guilty pleasure among friends during quarantine, starting with well known cult films such as [The Room](https://www.imdb.com/title/tt0368226/) or [Miami Connection](https://www.imdb.com/title/tt0092549/) and delving more into the weird over time. As the selection of movies have broadened its come to be known as 'Clumsy' Movie Night, a term that was coined by my daughter.
