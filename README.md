@@ -12,6 +12,12 @@ DISCORD_TERMINAL_CHANNEL='REPLACE_WITH_CHANNEL_NUM'
 DISCORD_TEST_CHANNEL='REPLACE_WITH_CHANNEL_NUM'
 WHEEL_API_KEY='REPLACE_WITH_KEY'
 ```
+Where to find these values:
+- DISCORD_BOT_TOKEN: This is the Client Secret provided when creating the OAuth2 permissions at https://discord.com/developers/applications
+- DISCORD_MOVIES_CHANNEL: In this setup, this is the channel dedicated to movie nominations and supports rollover and holdover based commands. To find the channel ID in Discord, go to Settings > Advanced and enable Developer Mode. Once this is enabled you can right click on the channel name and select COPY CHANNEL ID to send to your clipboard.
+- DISCORD_TERMINAL_CHANNEL: In this setup, this is a channel separate from movie nominations that is intended solely for issuing commands to the bot for sending votes to the wheel, tallying, or any IMDB based commands. 
+- DISCORD_TEST_CHANNEL: In this setup, this is a channel that is intended solely for the purpose of testing the bot prior to deployment. Supports some utility commands that are not available elsewhere.
+- WHEEL_API_KEY: This API key may be obtained by creating an account on https://wheelofnames.com/api-doc
 
 Install third party libraries
 ```bash
@@ -108,6 +114,8 @@ Running the python script or Jupyter notebook will then initialize the bot with 
 ## Considerations and Next Steps
 
 The downside to the current setup is that scripts running from a local laptop may be interrupted when the machine is shutdown, disconnecting the bot from the server. Therefore, next steps are to run the bot from a local server that retains a persistent connection to the Discord server. This can be setup through a Raspberry Pi. Additional options are third party services such as Heroku apps that run your application remotely. This will require some modifications as the current script is set up to pull access tokens, channel IDs, and so forth from environmental variables on the local computer.
+
+[Updated 2025-03-05: Setup for Raspberry Pi](https://github.com/alipphardt/clumsy-movie-bot?tab=readme-ov-file#update-setup-for-raspberry-pi)
 
 Another area of focus is some exploratory analyses of movies selected using IMDB database information. Findings may be used to inform the development of an improved recommender system that will suggest movies similar to titles chosen in the past, rather than simply selecting randomly from a top 1000 list.
 
