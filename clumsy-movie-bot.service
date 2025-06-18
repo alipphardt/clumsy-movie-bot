@@ -5,7 +5,7 @@ After=multi-user.target
 [Service]
 EnvironmentFile=/home/pi/clumsy-movie-bot/.env
 Type=simple
-ExecStart=/usr/bin/python3 /home/pi/clumsy-movie-bot/clumsy-movie-bot.py > /home/pi/clumsy-movie-bot/bot-output.log 2>&1
+ExecStart=/usr/bin/python3 /home/pi/clumsy-movie-bot/clumsy-movie-bot.py
 WorkingDirectory=/home/pi/clumsy-movie-bot
 StandardOutput=append:/home/pi/clumsy-movie-bot/clumsy.log
 StandardError=append:/home/pi/clumsy-movie-bot/clumsy.err
