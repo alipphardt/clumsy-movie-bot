@@ -2,3 +2,5 @@
 .DS_Store
 .github_pat
 .env
+clumsy.log
+clumsy.err

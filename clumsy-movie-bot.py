@@ -20,7 +20,7 @@ from discord.ext import commands, tasks
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import rcParams
+import seaborn as sns
 from imdb import Cinemagoer
 
 
@@ -118,32 +118,21 @@ class Voting(commands.Cog, name='1: Voting'):
 
         votes["Number of Votes"] = pd.to_numeric(votes["Number of Votes"])
         votes.sort_values(by = "Number of Votes", ascending = False, inplace = True)
+        votes['Movie_Trunc'] = votes['Movie'].apply(lambda x: x[:25] + '…' if len(x) > 25 else x)
 
-        # Create horizontal bar chart of movie rankings
+        sns.set(style="whitegrid")
+        plt.figure(figsize=(10, len(votes) * 0.5))
+        barplot = sns.barplot(x='Number of Votes', y='Movie_Trunc', data=votes, palette='Blues_d')
 
-        movies = votes["Movie"]
-        movies_range = np.arange(len(movies))
-        ranking = votes["Number of Votes"]
+        for i, (value, label) in enumerate(zip(votes['Number of Votes'], votes['Movie_Trunc'])):
+            plt.text(value + 0.5, i, str(value), va='center')
 
-        rcParams.update({'figure.autolayout': True})
+        plt.xlabel('Votes')
+        plt.ylabel('Movie')
+        plt.title('Clumsy Movie Ranking (as of ' + datetime.now().strftime("%m/%d/%Y, %H:%M") + ')')
+        plt.tight_layout()
 
-        if(len(movies) < 20):
-            rcParams.update({'figure.figsize': [16,9]})
-        else:
-            rcParams.update({'figure.figsize': [18,32]})
-
-        fig, ax = plt.subplots()
-
-        ax.barh(movies_range, ranking, align='center')
-        ax.set_yticks(movies_range)
-        ax.set_yticklabels(movies)
-        ax.invert_yaxis()  # labels read top-to-bottom
-        ax.set_xlabel('Number of Votes')
-        ax.set_title('Clumsy Movie Ranking ' + "(as of " + datetime.now().strftime("%m/%d/%Y, %H:%M:%S") + ")")
-
-        # Save figure locally and then embed into message
-
-        fig.savefig('/home/pi/clumsy-movie-bot/discord-images/graph.png')
+        plt.savefig('/home/pi/clumsy-movie-bot/discord-images/graph.png')
 
         with open('/home/pi/clumsy-movie-bot/discord-images/graph.png', 'rb') as f:
             file = io.BytesIO(f.read())
