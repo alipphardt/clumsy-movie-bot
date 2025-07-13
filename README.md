@@ -4,6 +4,7 @@ Clone the github repo within your home directory
 git clone https://github.com/alipphardt/clumsy-movie-bot.git
 ```
 
+## Environmental Variables
 Within the clumsy-movie-bot directory, create a .env file and add the following environmental variables
 ```bash
 DISCORD_BOT_TOKEN='REPLACE_WITH_TOKEN'
@@ -19,14 +20,25 @@ Where to find these values:
 - DISCORD_TEST_CHANNEL: In this setup, this is a channel that is intended solely for the purpose of testing the bot prior to deployment. Supports some utility commands that are not available elsewhere.
 - WHEEL_API_KEY: This API key may be obtained by creating an account on https://wheelofnames.com/api-doc
 
-Install third party libraries
+## Python Dependencies (Older Raspberry Pi Models)
+Install third party libraries into system environment
 ```bash
-pip3 install --upgrade -r /home/pi/clumsy-movie-bot/requirements.txt
+pip3 install --upgrade -r requirements.txt
 ```
 
-Copy the clumsy-movie-bot.service file to your /lib/systemd/system folder. This will allow the app to be run on system boot
+## Python Dependencies (Newer Models)
+Newer models protect the system environment. It is recommended that you create a virtual environment for python library installs. From the clumsy-movie-bot directory, run the following commands:
+
 ```bash
-sudo cp /home/pi/clumsy-movie-bot/clumsy-movie-bot.service /lib/systemd/system
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade -r requirements.txt
+```
+
+## Creating the Service
+From the clumsy-movie-bot directory, copy the clumsy-movie-bot.service file to your /lib/systemd/system folder. This will allow the app to be run on system boot
+```bash
+sudo cp clumsy-movie-bot.service /lib/systemd/system
 ```
 
 Run the following command to enable the new service

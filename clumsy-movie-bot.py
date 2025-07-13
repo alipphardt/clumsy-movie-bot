@@ -5,6 +5,7 @@
 # Standard python libraries
 import io
 import os
+import sys
 import math
 import random
 import pytz
@@ -20,6 +21,7 @@ from discord.ext import commands, tasks
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import seaborn as sns
 from imdb import Cinemagoer
 
@@ -27,6 +29,7 @@ from imdb import Cinemagoer
 ###############################################
 #               Initialization                #
 ###############################################
+
 
 # Global running list of winning movie titles for the current week
 titles = []
@@ -37,9 +40,10 @@ holdover = []
 fallen = []
 
 # List of past winners, stored in clumsy-movie-winners.csv
-winners = pd.read_csv('/home/pi/clumsy-movie-bot/clumsy-movie-winners.csv', dtype = {'Title':  str, 'ID': str})
-holdover = pd.read_csv('/home/pi/clumsy-movie-bot/holdover.csv', dtype = {'Movie': str})
-fallen = pd.read_csv('/home/pi/clumsy-movie-bot/fallen.csv', dtype = {'Movie': str})
+bmovies = pd.read_csv('bmovies.csv', dtype = {'ID': str})
+winners = pd.read_csv('clumsy-movie-winners.csv', dtype = {'Title':  str, 'ID': str})
+holdover = pd.read_csv('holdover.csv', dtype = {'Movie': str})
+fallen = pd.read_csv('fallen.csv', dtype = {'Movie': str})
 
 # Account/channel specific information stored as environmental variable
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
@@ -49,15 +53,9 @@ TEST_ID = int(os.environ['DISCORD_TEST_CHANNEL'])
 API_KEY = os.environ['WHEEL_API_KEY']
 
 
-# Top 1000 B-movies on IMDB by popularity
-bmovies = []
-for i in range(1,21):
-    bmovies.extend(Cinemagoer().get_keyword(keyword='b-movie',page=i))
-
-
 def lastSaturday():
 
-    rolltime = pd.read_csv('/home/pi/clumsy-movie-bot/rollover-time.csv', parse_dates=['Time'])
+    rolltime = pd.read_csv('rollover-time.csv', parse_dates=['Time'])
     rolltime['Time'] = rolltime['Time'].dt.tz_localize(None)
     return rolltime['Time'][0]
 
@@ -65,7 +63,7 @@ def lastSaturday():
 async def isTerminal(ctx):
     """ Custom check used in all commands to limit bot commands to skynet terminal OR clumsy testing server """
 
-    if(ctx.command.name in ['rollover', 'rollover2', 'holdover', 'print_holdover']):
+    if(ctx.command.name in ['rollover', 'holdover', 'print_holdover']):
         return True
 
     global TERMINAL_ID
@@ -73,7 +71,9 @@ async def isTerminal(ctx):
 
 
 # All commands for bot will be prefixed with a period (e.g. '.help')
-client = commands.Bot(command_prefix = '.')
+intents = discord.Intents.default()
+intents.message_content = True
+client = commands.Bot(command_prefix = '.', intents=intents)
 client.add_check(isTerminal)
 
 
@@ -82,7 +82,6 @@ client.add_check(isTerminal)
 #               WHEEL/VOTING                  #
 ###############################################
 
-client.remove_cog('1: Voting')
 
 class Voting(commands.Cog, name='1: Voting'):
     """Commands to read and summarize movie nominations and voting"""
@@ -122,24 +121,29 @@ class Voting(commands.Cog, name='1: Voting'):
 
         sns.set(style="whitegrid")
         plt.figure(figsize=(10, len(votes) * 0.5))
-        barplot = sns.barplot(x='Number of Votes', y='Movie_Trunc', data=votes, palette='Blues_d')
+        barplot = sns.barplot(x='Number of Votes', y='Movie_Trunc', data=votes, color='steelblue')
+
+        ax = plt.gca()
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        xlim = ax.get_xlim()
+        offset = (xlim[1] - xlim[0]) * 0.01  # 1% of axis width
 
         for i, (value, label) in enumerate(zip(votes['Number of Votes'], votes['Movie_Trunc'])):
-            plt.text(value + 0.5, i, str(value), va='center')
+            plt.text(value + offset, i, str(value), va='center')
 
         plt.xlabel('Votes')
         plt.ylabel('Movie')
         plt.title('Clumsy Movie Ranking (as of ' + datetime.now().strftime("%m/%d/%Y, %H:%M") + ')')
         plt.tight_layout()
 
-        plt.savefig('/home/pi/clumsy-movie-bot/discord-images/graph.png')
+        plt.savefig('./discord-images/graph.png')
 
-        with open('/home/pi/clumsy-movie-bot/discord-images/graph.png', 'rb') as f:
+        with open('./discord-images/graph.png', 'rb') as f:
             file = io.BytesIO(f.read())
 
         image = discord.File(file, filename='graph.png')
         embed = discord.Embed(title = "Votes as of " + datetime.now().strftime("%m/%d/%Y, %H:%M:%S"))
-        embed.set_image(url=f'attachment://graph.png')
+        embed.set_image(url='attachment://graph.png')
 
         await ctx.send(file=image, embed=embed)
 
@@ -245,7 +249,36 @@ class Voting(commands.Cog, name='1: Voting'):
 
             await ctx.send(wheel_list)
         else:
-            await ctx.send("Submitted. Go to https://wheelofnames.com/" + response.json()['data']['path'])        
+            await ctx.send("Submitted. Go to https://wheelofnames.com/" + response.json()['data']['path'])
+
+
+    @commands.command(brief='Prepare votes for the wheel, printing labels to channel', description='Generates a list for all movies that received at least one reaction since last rollover. Movie titles are duplicated according to number of votes.')
+    async def wheel2(self, ctx):
+
+        channel = client.get_channel(CHANNEL_ID)
+
+        # Create a text list of all movie titles, copied according to number of votes
+
+        wheel_list = ""
+        number_of_votes = 0
+
+        await ctx.send("Wheel List:\n")
+
+        async for message in channel.history(after=lastSaturday()):
+            if len(message.reactions) > 0 and message.content not in titles:
+
+                number_of_votes = 0
+
+                for reaction in message.reactions:
+                    number_of_votes += reaction.count
+
+                if(len(wheel_list + (message.content + "\n") * number_of_votes) >= 2000):
+                    await ctx.send(wheel_list)
+                    wheel_list = ""
+
+                wheel_list = wheel_list + (message.content + "\n") * number_of_votes
+
+        await ctx.send(wheel_list)
 
 
     @commands.command(brief='Send fallen list to wheel of names', description='Generates a list of movies from the fallen list. List is compiled into JSON and submitted to wheel of names application.')
@@ -338,11 +371,11 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send("Added to Permanent Movie List: " + movie['title'])
 
         winners = winners.append({'Title': movie['title'], 'ID': movieID}, ignore_index=True)
-        winners.to_csv('/home/pi/clumsy-movie-bot/clumsy-movie-winners.csv', index = False)
+        winners.to_csv('clumsy-movie-winners.csv', index = False)
 
 
     @commands.command(brief='List winners', description='Print the list of winners to be excluded from .rollover command')
-    async def winner_list(self, ctx):
+    async def exclude_list(self, ctx):
 
         global titles
         await ctx.send(titles)
@@ -396,7 +429,7 @@ class Voting(commands.Cog, name='1: Voting'):
 #
 #         # Write rollover time to an external file
 #         time_pd = pd.DataFrame(data = {'Time': [rollover_time]})
-#         time_pd.to_csv('/home/pi/clumsy-movie-bot/rollover-time.csv', index = False)
+#         time_pd.to_csv('rollover-time.csv', index = False)
 
 
     @commands.command(brief='Create a rollover list', description='Create a rollover list for the next week, with movies that have at least 2 unique voters. NOTE: Add winners to winner list first with winner command')
@@ -442,11 +475,11 @@ class Voting(commands.Cog, name='1: Voting'):
             movies.add(movie)
 
         fallen = pd.DataFrame(sorted(movies), columns = ['Movie'])
-        fallen.to_csv('/home/pi/clumsy-movie-bot/fallen.csv', index=False)
+        fallen.to_csv('fallen.csv', index=False)
 
         # Write rollover time to an external file
         time_pd = pd.DataFrame(data = {'Time': [rollover_time]})
-        time_pd.to_csv('/home/pi/clumsy-movie-bot/rollover-time.csv', index = False)
+        time_pd.to_csv('rollover-time.csv', index = False)
 
 
     @commands.command(brief='Print the fallen list', description='Print a list of previously nominated movies that held votes from 0 or 1 voters at the time they were removed.')
@@ -470,7 +503,7 @@ class Voting(commands.Cog, name='1: Voting'):
 
         await ctx.send(results)
 
-        with open('/home/pi/clumsy-movie-bot/discord-images/fallen.jpg', 'rb') as f:
+        with open('./discord-images/fallen.jpg', 'rb') as f:
             file = io.BytesIO(f.read())
 
         image = discord.File(file, filename='fallen.jpg')
@@ -505,7 +538,7 @@ class Voting(commands.Cog, name='1: Voting'):
 
             # Sort remaining movies and write back to The Fallen
             fallen = pd.DataFrame(fallen, columns = ['Movie'])
-            fallen.to_csv('/home/pi/clumsy-movie-bot/fallen.csv',index=False)
+            fallen.to_csv('fallen.csv',index=False)
 
             await ctx.send(f"Removed from The Fallen: {movie}")
 
@@ -529,11 +562,11 @@ class Voting(commands.Cog, name='1: Voting'):
                 holdover_list.append(message.content)
 
         hold_df = pd.DataFrame(sorted(holdover_list), columns = ['Movie'])
-        hold_df.to_csv('/home/pi/clumsy-movie-bot/holdover.csv', index=False)
+        hold_df.to_csv('holdover.csv', index=False)
 
         # Write rollover time to an external file
         time_pd = pd.DataFrame(data = {'Time': [rollover_time]})
-        time_pd.to_csv('/home/pi/clumsy-movie-bot/rollover-time.csv', index = False)
+        time_pd.to_csv('rollover-time.csv', index = False)
 
         await ctx.send("Holdover list created successfully")
         await ctx.send("Next Week on the Wheel:")
@@ -549,32 +582,12 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # Write rollover time to an external file
         time_pd = pd.DataFrame(data = {'Time': [rollover_time]})
-        time_pd.to_csv('/home/pi/clumsy-movie-bot/rollover-time.csv', index = False)
+        time_pd.to_csv('rollover-time.csv', index = False)
 
         await ctx.send("Next Week on the Wheel:")
 
         for movie in list(holdover['Movie']):
             await ctx.send(movie)
-
-
-    @commands.command(brief='Display total running time for all winners', description='Tabulate the total running time among all Clumsy Movie Night winners')
-    async def winners_runtime(self, ctx):
-
-        global winners
-        ia = Cinemagoer()
-        runtime = 0
-
-        await ctx.send("Tabulating (NOTE: Currently takes about 8-10 minutes due to slow IMDB API)")
-
-        for i in range(len(winners)):
-
-            try:
-                movie = ia.get_movie(winners.iloc[i]['ID'])
-                runtime = runtime + int(movie['runtimes'][0])
-            except TypeError:
-                runtime = runtime + 90
-
-        await ctx.send(f"Estimated Runtime: {runtime} minutes")
 
 
     @commands.command(brief='Generate custom BINGO card', description='Generate an image of a custom 5x5 BINGO card for movie night')
@@ -667,9 +680,9 @@ class Voting(commands.Cog, name='1: Voting'):
                 ax[i,j].yaxis.set_tick_params(labelleft=False, colors="white")
                 ax[i,j].text(0.5,0.5, bingo_card[i][j], ha="center", va="center", fontsize=12, wrap=True)
 
-        plt.savefig("/home/pi/clumsy-movie-bot/discord-images/scorecard.jpg")
+        plt.savefig("./discord-images/scorecard.jpg")
 
-        with open('/home/pi/clumsy-movie-bot/discord-images/scorecard.jpg', 'rb') as f:
+        with open('./discord-images/scorecard.jpg', 'rb') as f:
             file = io.BytesIO(f.read())
 
         image = discord.File(file, filename='scorecard.jpg')
@@ -679,14 +692,10 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send(file=image, embed=embed)
 
 
-client.add_cog(Voting(client))
-
-
 ###############################################
 #               IMDB COMMANDS                 #
 ###############################################
 
-client.remove_cog('2: IMDB Queries')
 
 class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
     """Query the IMDB movie database"""
@@ -730,25 +739,10 @@ class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
             await ctx.send("Please run .imdb command first to store list of movies")
             return
 
-        try:
-            title = movie['long imdb title']
-        except KeyError:
-            title = "Unavailable"
-
-        try:
-            description = movie['plot'][0].split('::')[0]
-        except KeyError:
-            description = "Unavailable"
-
-        try:
-            score = str(movie['rating'])
-        except KeyError:
-            score = "N/A"
-
-        try:
-            runtime = str(movie['runtimes'][0]) + " minutes"
-        except KeyError:
-            runtime = 'N/A'
+        title = movie.get('long imdb title', 'Unavailable')
+        description = movie.get('plot', ["Unavailable"])[0].split("::")[0]
+        score = str(movie.get('rating', 'N/A'))
+        runtime = str(movie.get('runtimes',['N/A'])[0])
 
         embed = discord.Embed(title = title,
                               description = description,
@@ -756,7 +750,7 @@ class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
                              url = "https://www.imdb.com/title/tt" + movieID)
 
         embed.add_field(name = 'IMDB Score', value = score, inline = True)
-        embed.add_field(name = 'Runtime', value = runtime, inline = True)
+        embed.add_field(name = 'Runtime (min)', value = runtime, inline = True)
 
         try:
             embed.set_image(url=movie['full-size cover url'])
@@ -803,44 +797,30 @@ class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
         ia = Cinemagoer()
         global bmovies
 
+        bmovie_ids = bmovies['ID'].values
+
         try:
             while True:
-                index = random.randint(0,len(bmovies)-1)
-                movieID = bmovies[index].movieID
-                movie = Cinemagoer().get_movie(movieID)
+                index = random.randint(0,len(bmovie_ids)-1)
+                movieID = bmovie_ids[index]
+                movie = ia.get_movie(movieID)
                 exclude = False
 
-                if(movie['kind'] == 'movie' and movie['year'] >= 1950):
+                if(movie.get('kind','movie') == 'movie' and movie.get('year',2000) >= 1950):
                     genres = ['War', 'News', 'Film-Noir', 'History', 'Biography', 'Documentary']
-                    for genre in genres:
-                        if genre in movie['genres']:
-                            exclude = True
+                    movie_genres = movie.get('genres',[])
+                    exclude = any(genre in movie_genres for genre in genres)
 
                     if exclude == False:
                         break
-        except:
-            await ctx.send("Something went wrong")
+        except Exception as e:
+            await ctx.send(f"Something went wrong: {e}")
             return
 
-        try:
-            title = movie['long imdb title']
-        except KeyError:
-            title = "Unavailable"
-
-        try:
-            description = movie['plot'][0].split('::')[0]
-        except KeyError:
-            description = "Unavailable"
-
-        try:
-            score = str(movie['rating'])
-        except KeyError:
-            score = "N/A"
-
-        try:
-            runtime = str(movie['runtimes'][0]) + " minutes"
-        except KeyError:
-            runtime = 'N/A'
+        title = movie.get('long imdb title', 'Unavailable')
+        description = movie.get('plot', ["Unavailable"])[0].split("::")[0]
+        score = str(movie.get('rating', 'N/A'))
+        runtime = str(movie.get('runtimes',['N/A'])[0])
 
         embed = discord.Embed(title = title,
                               description = description,
@@ -848,7 +828,7 @@ class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
                              url = "https://www.imdb.com/title/tt" + movieID)
 
         embed.add_field(name = 'IMDB Score', value = score, inline = True)
-        embed.add_field(name = 'Runtime', value = runtime, inline = True)
+        embed.add_field(name = 'Runtime (min)', value = runtime, inline = True)
 
         try:
             embed.set_image(url=movie['full-size cover url'])
@@ -858,14 +838,10 @@ class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
         await ctx.send(embed=embed)
 
 
-client.add_cog(IMDB_Queries(client))
-
-
 ###############################################
 #               UTILITY COMMANDS              #
 ###############################################
 
-client.remove_cog('3: Utility')
 
 class Utility(commands.Cog, name='3: Utility'):
     """Helper commands to facilitate testing or manage bot"""
@@ -877,13 +853,8 @@ class Utility(commands.Cog, name='3: Utility'):
     @commands.command(brief='Force logout for bot', description='Forces the bot to logoff Discord. Convenience function to interrupt process from jupyter notebook')
     async def kill(self, ctx):
         await ctx.send("Thank you for using Clumsy Movie Bot. Goodbye.")
-
-        # Log bot out of Discord
-        await client.logout()
-
-        # Clear internal cache of bot and prepare it to be reopened if necessary
-        client.clear()
-
+        await self.bot.close()
+        sys.exit(0)
 
 
     # For testing/debugging purposes
@@ -919,7 +890,13 @@ class Utility(commands.Cog, name='3: Utility'):
         await m4.add_reaction('\U0001f603')
 
 
-client.add_cog(Utility(client))
+async def setup_cogs():
+    await client.remove_cog('1: Voting')
+    await client.add_cog(Voting(client))
+    await client.remove_cog('2: IMDB Queries')
+    await client.add_cog(IMDB_Queries(client))
+    await client.remove_cog('3: Utility')
+    await client.add_cog(Utility(client))
 
 
 # Message bot will print to console when it is connected and ready to receive commands
@@ -927,6 +904,9 @@ client.add_cog(Utility(client))
 @client.event
 async def on_ready():
     channel = client.get_channel(TEST_ID)
+
+    await setup_cogs()
+
     ready_msg = f"Ready to comply...\n\nLast Rollover: {lastSaturday()}"
     await channel.send(ready_msg)
 
