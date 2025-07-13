@@ -1,3 +1,6 @@
+# Parses HTML Export from:
+# https://www.imdb.com/search/title/?title_type=feature&release_date=1950-01-01,&keywords=b-movie
+
 import re
 from bs4 import BeautifulSoup
 import pandas as pd
