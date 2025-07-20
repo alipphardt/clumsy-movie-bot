@@ -370,7 +370,8 @@ class Voting(commands.Cog, name='1: Voting'):
 
         await ctx.send("Added to Permanent Movie List: " + movie['title'])
 
-        winners = winners.append({'Title': movie['title'], 'ID': movieID}, ignore_index=True)
+        new_row = pd.DataFrame([{'Title': movie['title'], 'ID': movieID}])
+        winners = pd.concat([winners, new_row], ignore_index=True)
         winners.to_csv('clumsy-movie-winners.csv', index = False)
 
 
