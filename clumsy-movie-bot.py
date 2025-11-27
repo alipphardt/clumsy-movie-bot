@@ -205,7 +205,7 @@ class Voting(commands.Cog, name='1: Voting'):
         for title in wheel_list:
             entries.append({'text': title})
 
-        url = "https://wheelofnames.com/api/v1/wheels/shared"
+        url = "https://wheelofnames.com/api/v2/wheels"
 
         wheel = {
             "wheelConfig": {
@@ -221,16 +221,18 @@ class Voting(commands.Cog, name='1: Voting'):
             }
 
         headers = {
+            'x-api-key': API_KEY,
             'Content-Type': 'application/json',
-            'x-api-key': API_KEY
+            'Accept': 'application/json'
         }
 
-        response = requests.post(url, headers=headers, data=json.dumps(wheel))
+        response = requests.post(url, headers=headers, json=wheel)
 
-        if(response.status_code != 200):
+        if(response.status_code != 201):
             wheel_list = ""
             number_of_votes = 0
-
+            await ctx.send(response.status_code)
+            await ctx.send(response.text)
             await ctx.send("Wheel List:\n")
 
             async for message in channel.history(after=lastSaturday()):
@@ -441,18 +443,20 @@ class Voting(commands.Cog, name='1: Voting'):
 
         global fallen
 
-        await ctx.send("Next Week on the Wheel:")
+        #test_channel = client.get_channel(TEST_ID)
+        #await test_channel.send("Next Week on the Wheel:")
 
+        await ctx.send("Next Week on the Wheel:")
         channel = client.get_channel(CHANNEL_ID)
 
         rollover_list = []
         fallen_list = []
 
         async for message in channel.history(after=lastSaturday()):
-
+            #await test_channel.send("Checking: " + message.content)
             unique_users = set()
             for reaction in message.reactions:
-                users = await reaction.users().flatten()
+                users = [user async for user in reaction.users()]
                 unique_users.update(users)
                 if(len(unique_users) > 1):
                     break
@@ -465,6 +469,7 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # To the rollover
         for movie in sorted(rollover_list):
+            #await test_channel.send(movie)
             await ctx.send(movie)
 
         # To the fallen
