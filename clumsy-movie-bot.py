@@ -11,19 +11,19 @@ import random
 import pytz
 from datetime import datetime, timedelta
 from copy import deepcopy
-import requests
 import json
 import time
+from urllib.parse import quote
 
 # Third party libraries
 import discord
 from discord.ext import commands, tasks
 import pandas as pd
 import numpy as np
+import requests
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import seaborn as sns
-from imdb import Cinemagoer
 
 
 ###############################################
@@ -34,14 +34,14 @@ from imdb import Cinemagoer
 # Global running list of winning movie titles for the current week
 titles = []
 
-# Global list of movies returned from IMDB
+# Global list of movies returned from TMDB
 movies = []
 holdover = []
 fallen = []
 
 # List of past winners, stored in clumsy-movie-winners.csv
 bmovies = pd.read_csv('bmovies.csv', dtype = {'ID': str})
-winners = pd.read_csv('clumsy-movie-winners.csv', dtype = {'Title':  str, 'ID': str})
+winners = pd.read_csv('clumsy-movie-winners.csv', dtype = str)
 holdover = pd.read_csv('holdover.csv', dtype = {'Movie': str})
 fallen = pd.read_csv('fallen.csv', dtype = {'Movie': str})
 
@@ -51,6 +51,7 @@ CHANNEL_ID = int(os.environ['DISCORD_MOVIES_CHANNEL'])
 TERMINAL_ID = int(os.environ['DISCORD_TERMINAL_CHANNEL'])
 TEST_ID = int(os.environ['DISCORD_TEST_CHANNEL'])
 API_KEY = os.environ['WHEEL_API_KEY']
+TMDB_TOKEN = os.environ['TMDB_TOKEN']
 
 
 def lastSaturday():
@@ -357,22 +358,32 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send("Excluded from rollover: " + title)
 
 
-    @commands.command(brief='Added winning movie to permanent winning list', description='Add winning movie for the current week to a permanent list of winners. Use index from most recent IMDB search to store title and IMDB ID.')
+    @commands.command(brief='Added winning movie to permanent winning list', description='Add winning movie for the current week to a permanent list of winners. Use index from most recent TMDB search to store title and TMDB ID.')
     async def winner(self, ctx, index: int):
 
+        global movies
+        global winners
+        index = int(index) - 1
+        imdb_id = ''
+
         try:
-            global movies
-            global winners
-            index = int(index) - 1
-            movieID = movies[index].movieID
-            movie = Cinemagoer().get_movie(movieID)
+            movieID = movies[index]['id']
+
+            url = f"https://api.themoviedb.org/3/movie/{movieID}" 
+            headers = {
+                "Authorization": f"Bearer {TMDB_TOKEN}"
+            }
+            resp = requests.get(url=url, headers=headers)
+            data = resp.json()
+            imdb_id = data.get('imdb_id','')
+
         except IndexError:
-            await ctx.send("Please run .imdb command first to store list of movies")
+            await ctx.send("Please run .tmdb command first to store list of movies")
             return
 
-        await ctx.send("Added to Permanent Movie List: " + movie['title'])
+        await ctx.send("Added to Permanent Movie List: " + movies[index]['title'])
 
-        new_row = pd.DataFrame([{'Title': movie['title'], 'ID': movieID}])
+        new_row = pd.DataFrame([{'title': movies[index]['title'], 'imdb_id': imdb_id, 'tmdb_id': movieID}])
         winners = pd.concat([winners, new_row], ignore_index=True)
         winners.to_csv('clumsy-movie-winners.csv', index = False)
 
@@ -400,7 +411,7 @@ class Voting(commands.Cog, name='1: Voting'):
 
         for i in range(len(winners)):
 
-            next_movie = "[" + str(i+1) + "] " + winners.iloc[i]['Title'] + "\n"
+            next_movie = "[" + str(i+1) + "] " + winners.iloc[i]['title'] + "\n"
 
             if( len(results + next_movie) > 2000 ):
                 await ctx.send(results)
@@ -699,147 +710,158 @@ class Voting(commands.Cog, name='1: Voting'):
 
 
 ###############################################
-#               IMDB COMMANDS                 #
+#               TMDB COMMANDS                 #
 ###############################################
 
 
-class IMDB_Queries(commands.Cog, name='2: IMDB Queries'):
-    """Query the IMDB movie database"""
+class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
+    """Query the TMDB movie database"""
 
 
     def __init__(self, bot):
         self.bot = bot
 
 
-    @commands.command(brief = 'Run IMDB search for specified title', description = 'Returns the top 10 results from IMDB for using the specified title as the search query')
-    async def imdb(self, ctx, *, title: str):
-        ia = Cinemagoer()
+    @commands.command(brief = 'Run TMDB search for specified title', description = 'Returns the top 10 results from TMDB for using the specified title as the search query')
+    async def tmdb(self, ctx, *, title: str):
+
         global movies
-        movies = ia.search_movie(title)
+        movies = []
 
         await ctx.send("One moment please...")
 
-        results = "Top 10 Search Results from IMDB:\n"
+        query = quote(title)
+        url = f'https://api.themoviedb.org/3/search/movie?query={query}'
+        headers = {
+            "Authorization": f"Bearer {TMDB_TOKEN}"
+        }
+        resp = requests.get(url=url, headers=headers)
 
-        for i in range(len(movies)):
-
-            results += "[" + str(i+1) + "] " + movies[i]['long imdb title'] + "\n"
-
-            if(i == 9):
-                break
+        try:
+            data = resp.json()
+            results = "Top 10 Search Results from TMDB:\n"
+            for index, movie in enumerate(data['results'][:10]):
+                title = f"{movie.get('title', 'N/A')} ({movie.get('release_date', 'N/A')[:4]})"
+                movie_dict = {
+                    'title': title,
+                    'id': movie.get('id','')
+ 
+                }
+                movies.append(movie_dict)
+                results += "[" + str(index+1) + "] " + title + "\n"  
+        except Exception as e:
+            results = f"Error (Status Code: {resp.status_code}): {e}"
 
         await ctx.send(results)
 
 
-    @commands.command(brief = 'Show IMDB summary for selected movie', description = 'After running .imdb command, use the .imdb_summary <index> command to display the IMDB summary for a selected movie. If the .imdb command has not been run previously, an error message will be produced.')
-    async def imdb_summary(self, ctx, index):
+    @commands.command(brief = 'Show TMDB summary for selected movie', description = 'After running .tmdb command, use the .tmdb_summary <index> command to display the TMDB summary for a selected movie. If the .tmdb command has not been run previously, an error message will be produced.')
+    async def tmdb_summary(self, ctx, index):
 
-        ia = Cinemagoer()
+        global movies
 
         try:
-            global movies
             index = int(index) - 1
-            movieID = movies[index].movieID
-            movie = ia.get_movie(movieID)
+            movieID = movies[index]['id']
+
+            url = f'https://api.themoviedb.org/3/movie/{movieID}'
+            headers = {
+                "Authorization": f"Bearer {TMDB_TOKEN}"
+            }
+            resp = requests.get(url=url, headers=headers)
+            movie = resp.json()
+
         except IndexError:
-            await ctx.send("Please run .imdb command first to store list of movies")
+            await ctx.send("Please run .tmdb command first to store list of movies")
+            return
+        except Exception as e:
+            await ctx.send(f"Error (Status Code: {resp.status_code}): {e}")
             return
 
-        title = movie.get('long imdb title', 'Unavailable')
-        description = movie.get('plot', ["Unavailable"])[0].split("::")[0]
-        score = str(movie.get('rating', 'N/A'))
-        runtime = str(movie.get('runtimes',['N/A'])[0])
+        title = movie.get('title', 'Unavailable')
+        description = movie.get('overview', ["Unavailable"])
+        release_date = str(movie.get('release_date', 'N/A'))
+        runtime = str(movie.get('runtime','N/A'))
+        poster_path = movie.get('poster_path','')
 
         embed = discord.Embed(title = title,
                               description = description,
                              colour = discord.Colour.blue(),
-                             url = "https://www.imdb.com/title/tt" + movieID)
+                             url = f"https://www.themoviedb.org/movie/{movieID}")
 
-        embed.add_field(name = 'IMDB Score', value = score, inline = True)
+        embed.add_field(name = 'Release Date', value = release_date, inline = True)
         embed.add_field(name = 'Runtime (min)', value = runtime, inline = True)
 
-        try:
-            embed.set_image(url=movie['full-size cover url'])
-        except KeyError:
-            pass
+        if (poster_path != '') and (poster_path is not None):
+            try:
+                embed_url = "https://image.tmdb.org/t/p/original" + poster_path
+                embed.set_image(url=embed_url)
+            except KeyError:
+                pass
 
         await ctx.send(embed=embed)
 
 
-    @commands.command(brief='Trivia for past winner', description='Display all IMDB trivia for past winner')
-    async def trivia(self, ctx, index:int = None):
-
-        global winners
-
-        if index is None:
-            index = len(winners)
-
-        try:
-            movie_title = winners.iloc[index-1]['Title']
-            movie_id = winners.iloc[index-1]['ID']
-
-            await ctx.send(f"Trivia for: {movie_title}\n")
-
-            movie = Cinemagoer().get_movie(movie_id, info=['trivia'])
-            trivia = movie.get('trivia',[])
-
-            if not trivia:
-                await ctx.send("No trivia found for this movie")
-                return
-
-            for fact in trivia:
-                await ctx.send(fact + '\n')
-
-        except IndexError:
-            await ctx.send("Invalid index provided.")
-
-        except Exception as e:
-            await ctx.send(f"An error occurred: {str(e)}")
-
-
-    @commands.command(brief = 'Select random B-movie from IMDB Top 1000', description = '')
+    @commands.command(brief = 'Select random B-movie from TMDB Top 1000', description = '')
     async def random(self, ctx):
-
-        ia = Cinemagoer()
         global bmovies
-
         bmovie_ids = bmovies['ID'].values
 
-        try:
-            while True:
-                index = random.randint(0,len(bmovie_ids)-1)
-                movieID = bmovie_ids[index]
-                movie = ia.get_movie(movieID)
-                exclude = False
+        while True:
+            index = random.randint(0,len(bmovie_ids)-1)
+            movieID = f'tt{bmovie_ids[index]}'
 
-                if(movie.get('kind','movie') == 'movie' and movie.get('year',2000) >= 1950):
-                    genres = ['War', 'News', 'Film-Noir', 'History', 'Biography', 'Documentary']
-                    movie_genres = movie.get('genres',[])
-                    exclude = any(genre in movie_genres for genre in genres)
+            try:
 
-                    if exclude == False:
-                        break
-        except Exception as e:
-            await ctx.send(f"Something went wrong: {e}")
-            return
+                url = f'https://api.themoviedb.org/3/find/{movieID}'
+                headers = {
+                    "Authorization": f"Bearer {TMDB_TOKEN}"
+                }
+                params = {
+                    "external_source": "imdb_id",
+                    "language": "en-US"
+                }
+                resp = requests.get(url=url, headers=headers, params=params)
+                movie = resp.json()
 
-        title = movie.get('long imdb title', 'Unavailable')
-        description = movie.get('plot', ["Unavailable"])[0].split("::")[0]
-        score = str(movie.get('rating', 'N/A'))
-        runtime = str(movie.get('runtimes',['N/A'])[0])
+                movieID = movie['movie_results'][0]['id']
+                url = f'https://api.themoviedb.org/3/movie/{movieID}'
+                resp = requests.get(url=url, headers=headers)
+                movie = resp.json()
+
+            except IndexError:
+                continue
+            except Exception as e:
+                await ctx.send(f"Error (Status Code: {resp.status_code}): {e}")
+                return
+
+            release_year = str(movie.get('release_date', 'N/A'))[:4]
+            release_year = release_year if release_year != 'N/A' else 0
+            adult = movie.get('adult',False)
+
+            if not adult and int(release_year) >= 1950:
+                break
+
+        title = movie.get('title', 'Unavailable')
+        description = movie.get('overview', ["Unavailable"])
+        release_date = str(movie.get('release_date', 'N/A'))
+        runtime = str(movie.get('runtime','N/A'))
+        poster_path = movie.get('poster_path','')
 
         embed = discord.Embed(title = title,
                               description = description,
                              colour = discord.Colour.blue(),
-                             url = "https://www.imdb.com/title/tt" + movieID)
+                             url = f"https://www.themoviedb.org/movie/{movieID}")
 
-        embed.add_field(name = 'IMDB Score', value = score, inline = True)
+        embed.add_field(name = 'Release Date', value = release_date, inline = True)
         embed.add_field(name = 'Runtime (min)', value = runtime, inline = True)
 
-        try:
-            embed.set_image(url=movie['full-size cover url'])
-        except KeyError:
-            pass
+        if poster_path != '':
+            try:
+                embed_url = "https://image.tmdb.org/t/p/original" + poster_path
+                embed.set_image(url=embed_url)
+            except KeyError:
+                pass
 
         await ctx.send(embed=embed)
 
@@ -899,8 +921,8 @@ class Utility(commands.Cog, name='3: Utility'):
 async def setup_cogs():
     await client.remove_cog('1: Voting')
     await client.add_cog(Voting(client))
-    await client.remove_cog('2: IMDB Queries')
-    await client.add_cog(IMDB_Queries(client))
+    await client.remove_cog('2: TMDB Queries')
+    await client.add_cog(TMDB_Queries(client))
     await client.remove_cog('3: Utility')
     await client.add_cog(Utility(client))
 
@@ -918,4 +940,5 @@ async def on_ready():
 
 
 client.run(TOKEN)
+
 
