@@ -12,13 +12,15 @@ DISCORD_MOVIES_CHANNEL='REPLACE_WITH_CHANNEL_NUM'
 DISCORD_TERMINAL_CHANNEL='REPLACE_WITH_CHANNEL_NUM'
 DISCORD_TEST_CHANNEL='REPLACE_WITH_CHANNEL_NUM'
 WHEEL_API_KEY='REPLACE_WITH_KEY'
+TMDB_TOKEN='REPLACE_WITH_TOKEN'
 ```
 Where to find these values:
 - DISCORD_BOT_TOKEN: This is the Client Secret provided when creating the OAuth2 permissions at https://discord.com/developers/applications
 - DISCORD_MOVIES_CHANNEL: In this setup, this is the channel dedicated to movie nominations and supports rollover and holdover based commands. To find the channel ID in Discord, go to Settings > Advanced and enable Developer Mode. Once this is enabled you can right click on the channel name and select COPY CHANNEL ID to send to your clipboard.
-- DISCORD_TERMINAL_CHANNEL: In this setup, this is a channel separate from movie nominations that is intended solely for issuing commands to the bot for sending votes to the wheel, tallying, or any IMDB based commands. 
+- DISCORD_TERMINAL_CHANNEL: In this setup, this is a channel separate from movie nominations that is intended solely for issuing commands to the bot for sending votes to the wheel, tallying, or any TMDB based commands. 
 - DISCORD_TEST_CHANNEL: In this setup, this is a channel that is intended solely for the purpose of testing the bot prior to deployment. Supports some utility commands that are not available elsewhere.
 - WHEEL_API_KEY: This API key may be obtained by creating an account on https://wheelofnames.com/api-doc
+- TMDB_TOKEN: This token may be obtained by registering for a Developer API Token through The Movie Database (TMDB). See [TMDB - Getting Started](https://developer.themoviedb.org/docs/getting-started)
 
 ## Python Dependencies (Older Raspberry Pi Models)
 Install third party libraries into system environment
@@ -69,7 +71,7 @@ The bot was developed in Python and primarily uses two libraries for its command
 The commands for the bot are broken into three main categories:
 
 1. Voting/wheel commands facilitate the tallying of votes based on reactions/emojis, printing a list of movie titles to be copy/pasted into [wheelofnames.com](https://wheelofnames.com), helper commands for adding winning movies to temporary or permanent lists, as well as the ability to create a list of rollover titles for the following week for movies not in the winners list.
-2. IMDB commands integrate with IMDB.com to run searches for specified titles against the IMDB database. Results returned may be used to add movies into a permanent list of winners, to select movies from the Top 1000 b-movies at random, or to generate trivia for the current winning movie.
+2. TMDB commands integrate with themoviedb.org to run searches for specified titles against the TMDB database. Results returned may be used to add movies into a permanent list of winners, to select movies from the Top 1000 b-movies at random, or to generate trivia (NOTE: deprecated 1/26/2026) for the current winning movie.
 3. Utility commands are used strictly in testing/development. This includes generating sample movie titles with votes, the ability to purge messages from the testing channel, and a user command to force the bot to logout.
 
 For the purposes of documentation, the python scripts are managed in a Jupyter notebook and run from a local laptop, with future plans to run from a Raspberry Pi in order to keep the bot available around the clock.
@@ -88,19 +90,19 @@ The **.wheel** command takes the list of vote tallies and prints the titles mult
 
 ![List of movie titles proportional to number of votes](/images/wheel.png)
 
-The **.winners** command prints a list of all movies previously selected on Clumsy Movie Night. The titles have associated numbers which may be used with the IMDB trivia command.
+The **.winners** command prints a list of all movies previously selected on Clumsy Movie Night. The titles have associated numbers which may be used with the IMDB trivia command (deprecated 1/26/2026).
 
 ![List of prior winners](/images/winners.png)
 
-By issuing the **.trivia** command with the specified index, the bot will pull top 10 trivia for the winning movie from IMDB and print the results to the current channel.
+(Deprecated 1/26/2026) By issuing the **.trivia** command with the specified index, the bot will pull top 10 trivia for the winning movie from IMDB and print the results to the current channel.
 
 ![Sample trivia for The Room](/images/trivia.png)
 
-Searches on IMDB may also be performed using the **.imdb** command. Given that multiple movies may be returned with similar names, the default behavior is to return a list of numbered options.
+Searches on TMDB may also be performed using the **.tmdb** command. Given that multiple movies may be returned with similar names, the default behavior is to return a list of numbered options.
 
 ![IMDB query for the Matrix](/images/imdb.png)
 
-Running a followup command **.imdb_summary** with the specified index will display an IMDB summary with the title, description, IMDB score, running time, and movie poster.
+Running a followup command **.tmdb_summary** with the specified index will display an TMDB summary with the title, description, TMDB score, running time, and movie poster.
 
 ![IMDB summary for The Matrix](/images/imdb_summary.png)
 

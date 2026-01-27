@@ -4,4 +4,3 @@ seaborn
 discord.py
 requests
 bs4
-git+https://github.com/cinemagoer/cinemagoer.git
