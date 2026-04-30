@@ -149,6 +149,77 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send(file=image, embed=embed)
 
 
+    @commands.command(
+        brief='Top 10 oldest nominated movies',
+        description='Finds the 10 oldest movies (based on first appearance in channel history) among titles nominated since last rollover'
+    )
+    async def oldest(self, ctx):
+
+        await ctx.send("Scanning message history (this may take a bit)...")
+
+        channel = client.get_channel(CHANNEL_ID)
+
+        # Step 1: Collect titles since last rollover
+        current_titles = set()
+
+        EXCLUDED_TITLES = {
+            "Random b-movie (by bot)",
+            "Next Week on the Wheel:",
+            "Random movie from The Fallen List"
+        }
+
+        async for message in channel.history(after=lastSaturday()):
+            if (
+                   (message.content) and 
+                   (message.content not in titles) and 
+                   (message.content not in EXCLUDED_TITLES)
+               ):
+                current_titles.add(message.content)
+
+        if not current_titles:
+            await ctx.send("No titles found since last rollover.")
+            return
+
+        # Step 2: Scan full history once to find earliest occurrence of each title
+        first_seen = {}
+
+        async for message in channel.history(limit=None, oldest_first=True):
+            content = message.content
+
+            # Only track titles we care about
+            if (content in current_titles) and (content not in EXCLUDED_TITLES):
+                if content not in first_seen:
+                    first_seen[content] = message.created_at
+
+            # Optimization: stop early if we've found all titles
+            if len(first_seen) == len(current_titles):
+                break
+
+        if not first_seen:
+            await ctx.send("No matching historical messages found.")
+            return
+
+        # Step 3: Sort by oldest timestamp
+        sorted_movies = sorted(first_seen.items(), key=lambda x: x[1])
+
+        top_10 = sorted_movies[:10]
+
+        # Step 4: Format output
+        results = "Top 10 Oldest Movies (by first appearance):\n"
+
+        for i, (movie, timestamp) in enumerate(top_10):
+            date_str = timestamp.strftime("%Y-%m-%d")
+            line = f"[{i+1}] {movie} (first seen: {date_str})\n"
+
+            if len(results + line) > 2000:
+                await ctx.send(results)
+                results = ""
+
+            results += line
+
+        await ctx.send(results)
+
+
     @commands.command(brief='Count votes',
                     description='Calculate the total number of all votes since the last rollover')
     async def votecount(self, ctx):
