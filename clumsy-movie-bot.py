@@ -25,6 +25,16 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import seaborn as sns
 
+from voting_logic import (
+    build_weighted_wheel_titles,
+    build_wheel_entries,
+    build_wheel_text_chunks,
+    calculate_vote_totals,
+    classify_rollover_and_fallen,
+    count_total_votes,
+    merge_fallen_titles,
+)
+
 
 ###############################################
 #               Initialization                #
@@ -100,19 +110,15 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # Add movies and number of reactions (i.e. votes) and sort in descending order
 
-        votes = []
-        number_of_votes = 0
+        nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
-            if len(message.reactions) > 0 and message.content not in titles:
+            nomination_messages.append({
+                'content': message.content,
+                'reaction_counts': [reaction.count for reaction in message.reactions]
+            })
 
-                number_of_votes = 0
-
-                for reaction in message.reactions:
-                    number_of_votes += reaction.count
-
-                votes.append((message.content, number_of_votes))
-
+        votes = calculate_vote_totals(nomination_messages, titles)
 
         votes = pd.DataFrame.from_records(votes, columns = ['Movie', 'Number of Votes'])
 
@@ -228,13 +234,15 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # Add movies and number of reactions (i.e. votes) and sort in descending order
 
-        number_of_votes = 0
+        nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
-            if len(message.reactions) > 0 and message.content not in titles:
+            nomination_messages.append({
+                'content': message.content,
+                'reaction_counts': [reaction.count for reaction in message.reactions]
+            })
 
-                for reaction in message.reactions:
-                    number_of_votes += reaction.count
+        number_of_votes = count_total_votes(nomination_messages, titles)
 
         await ctx.send(f'Number of votes: {number_of_votes}')
 
@@ -258,24 +266,19 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # Create a text list of all movie titles, copied according to number of votes
 
-        wheel_list = []
-        number_of_votes = 0
+        nomination_messages = []
 
         await ctx.send("Preparing list for wheel of names...")
 
         async for message in channel.history(after=lastSaturday()):
-            if len(message.reactions) > 0 and message.content not in titles:
+            nomination_messages.append({
+                'content': message.content,
+                'reaction_counts': [reaction.count for reaction in message.reactions]
+            })
 
-                number_of_votes = 0
-
-                for reaction in message.reactions:
-                    number_of_votes += reaction.count
-                    for i in range(reaction.count):
-                        wheel_list.append(message.content)
-
-        entries = []
-        for title in wheel_list:
-            entries.append({'text': title})
+        vote_totals = calculate_vote_totals(nomination_messages, titles)
+        wheel_list = build_weighted_wheel_titles(vote_totals)
+        entries = build_wheel_entries(wheel_list)
 
         url = "https://wheelofnames.com/api/v2/wheels"
 
@@ -301,27 +304,21 @@ class Voting(commands.Cog, name='1: Voting'):
         response = requests.post(url, headers=headers, json=wheel)
 
         if(response.status_code != 201):
-            wheel_list = ""
-            number_of_votes = 0
+            nomination_messages = []
             await ctx.send(response.status_code)
             await ctx.send(response.text)
             await ctx.send("Wheel List:\n")
 
             async for message in channel.history(after=lastSaturday()):
-                if len(message.reactions) > 0 and message.content not in titles:
+                nomination_messages.append({
+                    'content': message.content,
+                    'reaction_counts': [reaction.count for reaction in message.reactions]
+                })
 
-                    number_of_votes = 0
+            vote_totals = calculate_vote_totals(nomination_messages, titles)
 
-                    for reaction in message.reactions:
-                        number_of_votes += reaction.count
-
-                    if(len(wheel_list + (message.content + "\n") * number_of_votes) >= 2000):
-                        await ctx.send(wheel_list)
-                        wheel_list = ""
-
-                    wheel_list = wheel_list + (message.content + "\n") * number_of_votes
-
-            await ctx.send(wheel_list)
+            for chunk in build_wheel_text_chunks(vote_totals):
+                await ctx.send(chunk)
         else:
             await ctx.send("Submitted. Go to https://wheelofnames.com/" + response.json()['data']['path'])
 
@@ -333,26 +330,20 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # Create a text list of all movie titles, copied according to number of votes
 
-        wheel_list = ""
-        number_of_votes = 0
+        nomination_messages = []
 
         await ctx.send("Wheel List:\n")
 
         async for message in channel.history(after=lastSaturday()):
-            if len(message.reactions) > 0 and message.content not in titles:
+            nomination_messages.append({
+                'content': message.content,
+                'reaction_counts': [reaction.count for reaction in message.reactions]
+            })
 
-                number_of_votes = 0
+        vote_totals = calculate_vote_totals(nomination_messages, titles)
 
-                for reaction in message.reactions:
-                    number_of_votes += reaction.count
-
-                if(len(wheel_list + (message.content + "\n") * number_of_votes) >= 2000):
-                    await ctx.send(wheel_list)
-                    wheel_list = ""
-
-                wheel_list = wheel_list + (message.content + "\n") * number_of_votes
-
-        await ctx.send(wheel_list)
+        for chunk in build_wheel_text_chunks(vote_totals):
+            await ctx.send(chunk)
 
 
     @commands.command(brief='Send fallen list to wheel of names', description='Generates a list of movies from the fallen list. List is compiled into JSON and submitted to wheel of names application.')
@@ -531,8 +522,7 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send("Next Week on the Wheel:")
         channel = client.get_channel(CHANNEL_ID)
 
-        rollover_list = []
-        fallen_list = []
+        nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
             #await test_channel.send("Checking: " + message.content)
@@ -543,11 +533,12 @@ class Voting(commands.Cog, name='1: Voting'):
                 if(len(unique_users) > 1):
                     break
 
-            if len(unique_users) > 1 and message.content not in titles:
-                rollover_list.append(message.content)
-            elif len(message.reactions) >= 0 and message.content not in titles:
-                if( (message.content != "Next Week on the Wheel:") and (message.content != ".rollover") ):
-                    fallen_list.append(message.content)
+            nomination_messages.append({
+                'content': message.content,
+                'unique_voter_count': len(unique_users)
+            })
+
+        rollover_list, fallen_list = classify_rollover_and_fallen(nomination_messages, titles)
 
         # To the rollover
         for movie in sorted(rollover_list):
@@ -556,13 +547,9 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # To the fallen
 
-        movies = fallen['Movie']
-        movies = set(movies)
+        movies = merge_fallen_titles(fallen['Movie'], fallen_list)
 
-        for movie in sorted(fallen_list):
-            movies.add(movie)
-
-        fallen = pd.DataFrame(sorted(movies), columns = ['Movie'])
+        fallen = pd.DataFrame(movies, columns = ['Movie'])
         fallen.to_csv('fallen.csv', index=False)
 
         # Write rollover time to an external file
