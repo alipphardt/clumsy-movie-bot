@@ -66,49 +66,73 @@ Eventually as more members were added to the Discord channel nominations increas
 
 ## Implementation with Python
 
-The bot was developed in Python and primarily uses two libraries for its commands, the **discordpy** and **cinemagoer** (previously imdbpy) libraries.
+The bot is developed in Python and primarily uses **discord.py** for Discord commands, **pandas** for CSV-backed state, **matplotlib/seaborn** for charts, [Wheel of Names](https://wheelofnames.com) for weighted random selection, and [TMDB](https://www.themoviedb.org/) for movie search/summary data.
 
 The commands for the bot are broken into three main categories:
 
-1. Voting/wheel commands facilitate the tallying of votes based on reactions/emojis, printing a list of movie titles to be copy/pasted into [wheelofnames.com](https://wheelofnames.com), helper commands for adding winning movies to temporary or permanent lists, as well as the ability to create a list of rollover titles for the following week for movies not in the winners list.
-2. TMDB commands integrate with themoviedb.org to run searches for specified titles against the TMDB database. Results returned may be used to add movies into a permanent list of winners, to select movies from the Top 1000 b-movies at random, or to generate trivia (NOTE: deprecated 1/26/2026) for the current winning movie.
-3. Utility commands are used strictly in testing/development. This includes generating sample movie titles with votes, the ability to purge messages from the testing channel, and a user command to force the bot to logout.
+1. Voting/wheel commands facilitate vote tallying based on reactions/emojis, submitting weighted movie lists to [wheelofnames.com](https://wheelofnames.com), printing a manual fallback list when the Wheel of Names API is unavailable, helper commands for adding winning movies to temporary or permanent lists, and creating rollover or holdover title lists for future weeks.
+2. TMDB commands integrate with themoviedb.org to run searches for specified titles against the TMDB database. Results returned may be used to add movies into a permanent list of winners, to select movies from the Top 1000 b-movies at random, or to show a movie summary.
+3. Utility/social commands support testing and movie-night operations. This includes generating sample nominations in the test channel, generating BINGO cards, purging Wheel of Names wheels associated with the API key, and forcing the bot to logout.
 
-For the purposes of documentation, the python scripts are managed in a Jupyter notebook and run from a local laptop, with future plans to run from a Raspberry Pi in order to keep the bot available around the clock.
+The bot is intended to run persistently, for example on a Raspberry Pi using the included systemd service file.
 
-All commands are implemented through the use of python decorator functions to extend the command function in the Commands class of the **discordpy** library, with a custom check implemented to ensure that commands are only accepted from specific channels in the testing or production Discord servers.
+All commands are implemented through python decorator functions from the **discord.py** commands extension, with a custom check to ensure that commands are only accepted from configured testing or production Discord channels.
+
+## Current Features
+
+Current bot features include:
+
+- `.tally` vote chart generation
+- `.votecount` total vote counting
+- `.moviecount` nomination counting since the last rollover
+- `.oldest` oldest currently nominated movies by first appearance in channel history
+- `.wheel` weighted Wheel of Names submission with Discord fallback output on API failure
+- `.wheel_fallen` Wheel of Names submission for The Fallen list
+- `.wheel_purge` deletion of Wheel of Names wheels associated with the configured API key
+- `.exclude`, `.winner`, `.exclude_list`, and `.winner_clear` winner-management helpers
+- `.rollover`, `.holdover`, and `.print_holdover` weekly nomination lifecycle helpers
+- `.fallen`, `.random_fallen`, and `.remove_fallen` Fallen-list helpers
+- `.winners` previous-winner listing
+- `.tmdb` and `.tmdb_summary` TMDB search/summary helpers
+- `.random` random B-movie lookup through TMDB
+- `.bingo` custom movie-night BINGO card generation
+- `.samples` test nomination generation from the terminal channel into the test channel
 
 ## Sample Commands
 
 The following are sample outputs from several of the basic commands.
 
-The **.tally** command tallys all votes that occurred since the previous rollover of movie nominations (typically Saturday at 10 PM), creates and saves a Matplotlib bar chart of the votes, and then submits the message to the current channel attaching the plot as an embedded image.
+The **.tally** command tallies all votes that occurred since the previous rollover of movie nominations, creates a Matplotlib/Seaborn bar chart of the votes, and then submits the message to the current channel attaching the plot as an embedded image. If there are no votes since the last rollover, the bot reports that no votes were found instead of attempting to render an empty chart.
 
 ![Tally of sample votes](/images/tally.png)
 
-The **.wheel** command takes the list of vote tallies and prints the titles multiple times according to the number of votes received. This provides a list that is easy for the user to copy and paste into the wheel before spinning.
+The **.wheel** command takes the list of vote tallies, duplicates each title according to the number of votes received, and submits the weighted list to Wheel of Names using the current v3 API. If the API request fails, the bot automatically prints the weighted list to Discord so it can be copied into Wheel of Names manually. Titles containing terms known to be rejected by Wheel of Names are sanitized for the submitted wheel by replacing vowels with asterisks; the original nomination text is not changed.
 
 ![List of movie titles proportional to number of votes](/images/wheel.png)
+
+The **.moviecount** command counts movie nomination messages since the last rollover. It counts nominations whether or not they have votes, including bot-generated rollover nominations, and excludes the rollover header message `Next Week on the Wheel:`.
+
+The **.oldest** command finds the 10 oldest currently nominated movies by scanning channel history for the first appearance of each title. It excludes known bot/control messages and stops scanning history once all current titles have been found.
+
+The **.wheel_fallen** command submits The Fallen list to Wheel of Names. It uses the same Wheel of Names v3 payload and title-sanitization behavior as `.wheel`.
+
+The **.bingo** command generates a custom 5x5 movie-night BINGO card as a PNG image.
 
 The **.winners** command prints a list of all movies previously selected on Clumsy Movie Night. The titles have associated numbers which may be used with the IMDB trivia command (deprecated 1/26/2026).
 
 ![List of prior winners](/images/winners.png)
 
-(Deprecated 1/26/2026) By issuing the **.trivia** command with the specified index, the bot will pull top 10 trivia for the winning movie from IMDB and print the results to the current channel.
-
-![Sample trivia for The Room](/images/trivia.png)
-
 Searches on TMDB may also be performed using the **.tmdb** command. Given that multiple movies may be returned with similar names, the default behavior is to return a list of numbered options.
 
-![IMDB query for the Matrix](/images/imdb.png)
+![TMDB query for the Matrix](/images/imdb.png)
 
-Running a followup command **.tmdb_summary** with the specified index will display an TMDB summary with the title, description, TMDB score, running time, and movie poster.
+Running a followup command **.tmdb_summary** with the specified index will display a TMDB summary with the title, description, release date, running time, and movie poster.
 
-![IMDB summary for The Matrix](/images/imdb_summary.png)
+![TMDB summary for The Matrix](/images/imdb_summary.png)
 
-Finally, a random movie by bot selection is also available to provide an additional level of chaos. By running the **.random** command, a random movie is selected from the Top 1000 movies on IMDB with keyword b-movie.
+Finally, a random movie by bot selection is also available to provide an additional level of chaos. By running the **.random** command, a random movie is selected from the local Top 1000 b-movies list and looked up in TMDB.
 
-![Random movie from IMDB](/images/random.png)
+![Random movie from TMDB](/images/random.png)
 
 
 ## Creating the bot account on Discord
@@ -127,11 +151,9 @@ Running the python script or Jupyter notebook will then initialize the bot with 
 
 ## Considerations and Next Steps
 
-The downside to the current setup is that scripts running from a local laptop may be interrupted when the machine is shutdown, disconnecting the bot from the server. Therefore, next steps are to run the bot from a local server that retains a persistent connection to the Discord server. This can be setup through a Raspberry Pi. Additional options are third party services such as Heroku apps that run your application remotely. This will require some modifications as the current script is set up to pull access tokens, channel IDs, and so forth from environmental variables on the local computer.
+The bot can be run persistently from a Raspberry Pi using the setup described above. For safer live operation, useful future command additions would include a general `.status` command, a `.preview_wheel` command, and a `.preview_rollover` command so major actions can be reviewed before mutating files or submitting to external services.
 
-[Updated 2025-03-05: Setup for Raspberry Pi](https://github.com/alipphardt/clumsy-movie-bot?tab=readme-ov-file#update-setup-for-raspberry-pi)
-
-Another area of focus is some exploratory analyses of movies selected using IMDB database information. Findings may be used to inform the development of an improved recommender system that will suggest movies similar to titles chosen in the past, rather than simply selecting randomly from a top 1000 list.
+Another area of focus is exploratory analysis of movies selected using available movie metadata. Findings may be used to inform the development of an improved recommender system that will suggest movies similar to titles chosen in the past, rather than simply selecting randomly from a top 1000 list.
 
 For example, a quick analyses of keywords for all prior winners shows that the majority of movies have keywords associated with cult-film, psychotronic-film, or surrealism. Using top keywords as selected features might provide a means to generate a training set for supervised machine learning, allowing the bot to select new movies that meet a combination of keyword criteria. This could also be coupled with numeric scores based on how much the audience enjoyed each given movie, which could be implemented with some custom scoring commands.
 

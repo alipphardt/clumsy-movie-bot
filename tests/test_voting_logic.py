@@ -1,11 +1,19 @@
+from datetime import datetime
+
 from voting_logic import (
+    DEFAULT_OLDEST_EXCLUDED_TITLES,
+    build_holdover_titles,
     build_weighted_wheel_titles,
-    build_wheel_entries,
     build_wheel_text_chunks,
     calculate_vote_totals,
     classify_rollover_and_fallen,
+    collect_current_nomination_titles,
+    count_movie_nominations,
     count_total_votes,
+    find_first_seen_titles,
+    format_oldest_title_lines,
     merge_fallen_titles,
+    top_oldest_titles,
 )
 
 
@@ -62,6 +70,143 @@ def test_count_total_votes_sums_vote_totals_and_applies_exclusions():
     assert result == 6
 
 
+def test_count_movie_nominations_counts_messages_regardless_of_reactions():
+    messages = [
+        {"content": "Movie A", "reaction_counts": []},
+        {"content": "Movie B", "reaction_counts": [2]},
+        {"content": "Bot-generated rollover movie", "reaction_counts": []},
+    ]
+
+    assert count_movie_nominations(messages) == 3
+
+
+def test_count_movie_nominations_excludes_next_week_header_by_default():
+    messages = [
+        {"content": "Next Week on the Wheel:", "reaction_counts": []},
+        {"content": "Movie A", "reaction_counts": []},
+    ]
+
+    assert count_movie_nominations(messages) == 1
+
+
+def test_count_movie_nominations_preserves_duplicate_nominations_as_separate_count():
+    messages = [
+        {"content": "Movie A", "reaction_counts": []},
+        {"content": "Movie A", "reaction_counts": [1]},
+    ]
+
+    assert count_movie_nominations(messages) == 2
+
+
+def test_count_movie_nominations_allows_custom_exclusions():
+    messages = [
+        {"content": "Skip Me", "reaction_counts": []},
+        {"content": "Next Week on the Wheel:", "reaction_counts": []},
+        {"content": "Movie A", "reaction_counts": []},
+    ]
+
+    assert count_movie_nominations(messages, excluded_titles={"Skip Me"}) == 2
+
+
+
+def test_collect_current_nomination_titles_excludes_empty_and_configured_titles():
+    messages = [
+        {"content": ""},
+        {"content": "Movie A"},
+        {"content": "Winner"},
+        {"content": "Next Week on the Wheel:"},
+    ]
+
+    result = collect_current_nomination_titles(
+        messages,
+        excluded_titles={"Winner"}.union(DEFAULT_OLDEST_EXCLUDED_TITLES),
+    )
+
+    assert result == {"Movie A"}
+
+
+def test_collect_current_nomination_titles_includes_unreacted_and_collapses_duplicates():
+    messages = [
+        {"content": "Movie A", "reaction_counts": []},
+        {"content": "Movie A", "reaction_counts": [2]},
+        {"content": "Movie B", "reaction_counts": []},
+    ]
+
+    result = collect_current_nomination_titles(messages)
+
+    assert result == {"Movie A", "Movie B"}
+
+
+def test_find_first_seen_titles_returns_earliest_ordered_occurrence_for_current_titles():
+    current_titles = {"Movie A", "Movie B"}
+    messages = [
+        {"content": "Movie B", "created_at": datetime(2020, 1, 2)},
+        {"content": "Ignored Movie", "created_at": datetime(2020, 1, 3)},
+        {"content": "Movie A", "created_at": datetime(2020, 1, 4)},
+        {"content": "Movie A", "created_at": datetime(2021, 1, 1)},
+    ]
+
+    result = find_first_seen_titles(messages, current_titles)
+
+    assert result == {
+        "Movie B": datetime(2020, 1, 2),
+        "Movie A": datetime(2020, 1, 4),
+    }
+
+
+def test_top_oldest_titles_sorts_by_timestamp_and_applies_limit():
+    first_seen = {
+        "Movie C": datetime(2020, 1, 3),
+        "Movie A": datetime(2020, 1, 1),
+        "Movie B": datetime(2020, 1, 2),
+    }
+
+    result = top_oldest_titles(first_seen, limit=2)
+
+    assert result == [
+        ("Movie A", datetime(2020, 1, 1)),
+        ("Movie B", datetime(2020, 1, 2)),
+    ]
+
+
+def test_format_oldest_title_lines_uses_numbered_date_output():
+    oldest_titles = [
+        ("Movie A", datetime(2020, 1, 1)),
+        ("Movie B", datetime(2020, 2, 3)),
+    ]
+
+    result = format_oldest_title_lines(oldest_titles)
+
+    assert result == [
+        "[1] Movie A (first seen: 2020-01-01)\n",
+        "[2] Movie B (first seen: 2020-02-03)\n",
+    ]
+
+def test_build_holdover_titles_reuses_vote_eligibility_and_sorts_titles():
+    messages = [
+        {"content": "Movie C", "reaction_counts": [1]},
+        {"content": "Movie A", "reaction_counts": [2]},
+        {"content": "Unreacted Movie", "reaction_counts": []},
+        {"content": "Excluded Movie", "reaction_counts": [5]},
+    ]
+
+    result = build_holdover_titles(messages, excluded_titles={"Excluded Movie"})
+
+    assert result == ["Movie A", "Movie C"]
+
+
+def test_build_holdover_titles_preserves_duplicate_nominations():
+    messages = [
+        {"content": "Movie B", "reaction_counts": [1]},
+        {"content": "Movie A", "reaction_counts": [2]},
+        {"content": "Movie A", "reaction_counts": [3]},
+    ]
+
+    result = build_holdover_titles(messages)
+
+    assert result == ["Movie A", "Movie A", "Movie B"]
+
+
 def test_build_weighted_wheel_titles_repeats_titles_by_vote_count_in_order():
     vote_totals = [
         ("Movie A", 3),
@@ -93,18 +238,6 @@ def test_build_weighted_wheel_titles_preserves_duplicate_title_entries():
     ]
 
 
-def test_build_wheel_entries_uses_wheel_of_names_text_shape():
-    weighted_titles = ["Movie A", "Movie A", "Movie B"]
-
-    result = build_wheel_entries(weighted_titles)
-
-    assert result == [
-        {"text": "Movie A"},
-        {"text": "Movie A"},
-        {"text": "Movie B"},
-    ]
-
-
 def test_vote_totals_to_weighted_titles_preserves_exclusions_and_duplicate_nominations():
     messages = [
         {"content": "Movie A", "reaction_counts": [2]},
@@ -123,7 +256,7 @@ def test_vote_totals_to_weighted_titles_preserves_exclusions_and_duplicate_nomin
     ]
 
 
-def test_build_wheel_text_chunks_formats_titles_like_wheel2_output():
+def test_build_wheel_text_chunks_formats_titles_like_wheel_fallback_output():
     vote_totals = [
         ("Movie A", 2),
         ("Movie B", 1),

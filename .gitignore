@@ -9,3 +9,5 @@ venv
 bmovie.html
 discord-images/scorecard.jpg
 AGENTS.md
+__pycache__
+fallen.csv.bak*

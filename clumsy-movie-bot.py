@@ -6,33 +6,56 @@
 import io
 import os
 import sys
-import math
 import random
 import pytz
 from datetime import datetime, timedelta
-from copy import deepcopy
-import json
-import time
-from urllib.parse import quote
-
 # Third party libraries
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import pandas as pd
-import numpy as np
 import requests
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import seaborn as sns
 
+from discord_helpers import chunk_lines
+from tmdb import (
+    build_auth_headers,
+    build_find_by_imdb_id_url,
+    build_movie_details_url,
+    build_search_movie_url,
+    build_tmdb_movie_url,
+    extract_first_movie_result_id,
+    format_search_results_message,
+    is_random_candidate_allowed,
+    parse_movie_summary,
+    parse_search_results,
+)
 from voting_logic import (
+    build_holdover_titles,
     build_weighted_wheel_titles,
-    build_wheel_entries,
     build_wheel_text_chunks,
+    DEFAULT_OLDEST_EXCLUDED_TITLES,
     calculate_vote_totals,
     classify_rollover_and_fallen,
+    collect_current_nomination_titles,
+    count_movie_nominations,
     count_total_votes,
+    find_first_seen_titles,
+    format_oldest_title_lines,
     merge_fallen_titles,
+    top_oldest_titles,
+)
+from wheel_of_names import (
+    WHEEL_API_V3_URL,
+    build_delete_wheel_url,
+    build_list_wheels_params,
+    build_sanitized_wheel_title_lines,
+    build_wheel_entries,
+    build_wheel_payload,
+    build_wheel_share_url,
+    extract_wheel_path,
+    extract_wheel_paths,
 )
 
 
@@ -46,22 +69,47 @@ titles = []
 
 # Global list of movies returned from TMDB
 movies = []
-holdover = []
-fallen = []
+holdover_df = []
+fallen_df = []
+
+def load_dataframes():
+    """Load CSV-backed bot dataframes."""
+    return {
+        'bmovies_df': pd.read_csv('bmovies.csv', dtype = {'ID': str}),
+        'winners_df': pd.read_csv('clumsy-movie-winners.csv', dtype = str),
+        'holdover_df': pd.read_csv('holdover.csv', dtype = {'Movie': str}),
+        'fallen_df': pd.read_csv('fallen.csv', dtype = {'Movie': str}),
+    }
+
 
 # List of past winners, stored in clumsy-movie-winners.csv
-bmovies = pd.read_csv('bmovies.csv', dtype = {'ID': str})
-winners = pd.read_csv('clumsy-movie-winners.csv', dtype = str)
-holdover = pd.read_csv('holdover.csv', dtype = {'Movie': str})
-fallen = pd.read_csv('fallen.csv', dtype = {'Movie': str})
+_dataframes = load_dataframes()
+bmovies_df = _dataframes['bmovies_df']
+winners_df = _dataframes['winners_df']
+holdover_df = _dataframes['holdover_df']
+fallen_df = _dataframes['fallen_df']
+
+def load_config(environ=None):
+    """Load bot configuration from environment variables."""
+    environ = environ or os.environ
+    return {
+        'TOKEN': environ['DISCORD_BOT_TOKEN'],
+        'CHANNEL_ID': int(environ['DISCORD_MOVIES_CHANNEL']),
+        'TERMINAL_ID': int(environ['DISCORD_TERMINAL_CHANNEL']),
+        'TEST_ID': int(environ['DISCORD_TEST_CHANNEL']),
+        'API_KEY': environ['WHEEL_API_KEY'],
+        'TMDB_TOKEN': environ['TMDB_TOKEN'],
+    }
+
 
 # Account/channel specific information stored as environmental variable
-TOKEN = os.environ['DISCORD_BOT_TOKEN']
-CHANNEL_ID = int(os.environ['DISCORD_MOVIES_CHANNEL'])
-TERMINAL_ID = int(os.environ['DISCORD_TERMINAL_CHANNEL'])
-TEST_ID = int(os.environ['DISCORD_TEST_CHANNEL'])
-API_KEY = os.environ['WHEEL_API_KEY']
-TMDB_TOKEN = os.environ['TMDB_TOKEN']
+config = load_config()
+TOKEN = config['TOKEN']
+CHANNEL_ID = config['CHANNEL_ID']
+TERMINAL_ID = config['TERMINAL_ID']
+TEST_ID = config['TEST_ID']
+API_KEY = config['API_KEY']
+TMDB_TOKEN = config['TMDB_TOKEN']
 
 
 def lastSaturday():
@@ -77,8 +125,37 @@ async def isTerminal(ctx):
     if(ctx.command.name in ['rollover', 'holdover', 'print_holdover']):
         return True
 
-    global TERMINAL_ID
+    if(ctx.command.name == 'samples'):
+        return ctx.channel.id == TERMINAL_ID
+
     return ctx.channel.id == TERMINAL_ID or ctx.channel.id == TEST_ID
+
+
+def message_to_vote_record(message):
+    """Convert a Discord message into the simple shape used by voting logic."""
+    return {
+        'content': message.content,
+        'reaction_counts': [reaction.count for reaction in message.reactions]
+    }
+
+
+def build_tmdb_embed(movie_id, summary):
+    """Build a Discord embed for parsed TMDB movie summary data."""
+    embed = discord.Embed(title = summary['title'],
+                          description = summary['description'],
+                         colour = discord.Colour.blue(),
+                         url = build_tmdb_movie_url(movie_id))
+
+    embed.add_field(name = 'Release Date', value = summary['release_date'], inline = True)
+    embed.add_field(name = 'Runtime (min)', value = summary['runtime'], inline = True)
+
+    if summary['poster_url'] != '':
+        try:
+            embed.set_image(url=summary['poster_url'])
+        except KeyError:
+            pass
+
+    return embed
 
 
 # All commands for bot will be prefixed with a period (e.g. '.help')
@@ -113,12 +190,13 @@ class Voting(commands.Cog, name='1: Voting'):
         nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
-            nomination_messages.append({
-                'content': message.content,
-                'reaction_counts': [reaction.count for reaction in message.reactions]
-            })
+            nomination_messages.append(message_to_vote_record(message))
 
         votes = calculate_vote_totals(nomination_messages, titles)
+
+        if not votes:
+            await ctx.send("No votes found since last rollover.")
+            return
 
         votes = pd.DataFrame.from_records(votes, columns = ['Movie', 'Number of Votes'])
 
@@ -127,23 +205,26 @@ class Voting(commands.Cog, name='1: Voting'):
         votes['Movie_Trunc'] = votes['Movie'].apply(lambda x: x[:25] + '…' if len(x) > 25 else x)
 
         sns.set(style="whitegrid")
-        plt.figure(figsize=(10, len(votes) * 0.5))
-        barplot = sns.barplot(x='Number of Votes', y='Movie_Trunc', data=votes, color='steelblue')
+        figure_height = min(max(3, len(votes) * 0.5), 20)
+        fig, ax = plt.subplots(figsize=(10, figure_height))
+        sns.barplot(x='Number of Votes', y='Movie_Trunc', data=votes, color='steelblue', ax=ax)
 
-        ax = plt.gca()
         ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        max_votes = votes['Number of Votes'].max()
+        ax.set_xlim(0, max_votes * 1.15)
         xlim = ax.get_xlim()
         offset = (xlim[1] - xlim[0]) * 0.01  # 1% of axis width
 
-        for i, (value, label) in enumerate(zip(votes['Number of Votes'], votes['Movie_Trunc'])):
-            plt.text(value + offset, i, str(value), va='center')
+        for i, value in enumerate(votes['Number of Votes']):
+            ax.text(value + offset, i, str(value), va='center')
 
-        plt.xlabel('Votes')
-        plt.ylabel('Movie')
-        plt.title('Clumsy Movie Ranking (as of ' + datetime.now().strftime("%m/%d/%Y, %H:%M") + ')')
-        plt.tight_layout()
+        ax.set_xlabel('Votes')
+        ax.set_ylabel('Movie')
+        ax.set_title('Clumsy Movie Ranking (as of ' + datetime.now().strftime("%m/%d/%Y, %H:%M") + ')')
+        fig.tight_layout()
 
-        plt.savefig('./discord-images/graph.png')
+        fig.savefig('./discord-images/graph.png', dpi=150, bbox_inches='tight')
+        plt.close(fig)
 
         with open('./discord-images/graph.png', 'rb') as f:
             file = io.BytesIO(f.read())
@@ -166,21 +247,13 @@ class Voting(commands.Cog, name='1: Voting'):
         channel = client.get_channel(CHANNEL_ID)
 
         # Step 1: Collect titles since last rollover
-        current_titles = set()
-
-        EXCLUDED_TITLES = {
-            "Random b-movie (by bot)",
-            "Next Week on the Wheel:",
-            "Random movie from The Fallen List"
-        }
+        recent_messages = []
+        excluded_titles = set(titles).union(DEFAULT_OLDEST_EXCLUDED_TITLES)
 
         async for message in channel.history(after=lastSaturday()):
-            if (
-                   (message.content) and 
-                   (message.content not in titles) and 
-                   (message.content not in EXCLUDED_TITLES)
-               ):
-                current_titles.add(message.content)
+            recent_messages.append({'content': message.content})
+
+        current_titles = collect_current_nomination_titles(recent_messages, excluded_titles)
 
         if not current_titles:
             await ctx.send("No titles found since last rollover.")
@@ -190,12 +263,10 @@ class Voting(commands.Cog, name='1: Voting'):
         first_seen = {}
 
         async for message in channel.history(limit=None, oldest_first=True):
-            content = message.content
-
-            # Only track titles we care about
-            if (content in current_titles) and (content not in EXCLUDED_TITLES):
-                if content not in first_seen:
-                    first_seen[content] = message.created_at
+            first_seen.update(find_first_seen_titles([{
+                'content': message.content,
+                'created_at': message.created_at
+            }], current_titles - set(first_seen)))
 
             # Optimization: stop early if we've found all titles
             if len(first_seen) == len(current_titles):
@@ -205,25 +276,12 @@ class Voting(commands.Cog, name='1: Voting'):
             await ctx.send("No matching historical messages found.")
             return
 
-        # Step 3: Sort by oldest timestamp
-        sorted_movies = sorted(first_seen.items(), key=lambda x: x[1])
+        # Step 3: Sort by oldest timestamp and format output
+        top_10 = top_oldest_titles(first_seen)
+        lines = format_oldest_title_lines(top_10)
 
-        top_10 = sorted_movies[:10]
-
-        # Step 4: Format output
-        results = "Top 10 Oldest Movies (by first appearance):\n"
-
-        for i, (movie, timestamp) in enumerate(top_10):
-            date_str = timestamp.strftime("%Y-%m-%d")
-            line = f"[{i+1}] {movie} (first seen: {date_str})\n"
-
-            if len(results + line) > 2000:
-                await ctx.send(results)
-                results = ""
-
-            results += line
-
-        await ctx.send(results)
+        for chunk in chunk_lines("Top 10 Oldest Movies (by first appearance):\n", lines):
+            await ctx.send(chunk)
 
 
     @commands.command(brief='Count votes',
@@ -237,26 +295,25 @@ class Voting(commands.Cog, name='1: Voting'):
         nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
-            nomination_messages.append({
-                'content': message.content,
-                'reaction_counts': [reaction.count for reaction in message.reactions]
-            })
+            nomination_messages.append(message_to_vote_record(message))
 
         number_of_votes = count_total_votes(nomination_messages, titles)
 
         await ctx.send(f'Number of votes: {number_of_votes}')
 
 
-    @commands.command(brief='Count movies nominated', description='Counts all movies currently nominated since the last rollover')
+    @commands.command(brief='Count movies nominated', description='Counts all movie nominations since the last rollover, excluding rollover header messages')
     async def moviecount(self, ctx):
 
         channel = client.get_channel(CHANNEL_ID)
-        number_of_votes = 0
+        nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
-            number_of_votes += 1
+            nomination_messages.append({'content': message.content})
 
-        await ctx.send("Number of movies: " + str(number_of_votes) + "\n")
+        number_of_movies = count_movie_nominations(nomination_messages)
+
+        await ctx.send("Number of movies: " + str(number_of_movies) + "\n")
 
 
     @commands.command(brief='Send list to wheel of names', description='Generates a list for all movies that received at least one reaction since last rollover. Movie titles are duplicated according to number of votes. List is compiled into JSON and submitted to wheel of names application.')
@@ -271,29 +328,18 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send("Preparing list for wheel of names...")
 
         async for message in channel.history(after=lastSaturday()):
-            nomination_messages.append({
-                'content': message.content,
-                'reaction_counts': [reaction.count for reaction in message.reactions]
-            })
+            nomination_messages.append(message_to_vote_record(message))
 
         vote_totals = calculate_vote_totals(nomination_messages, titles)
         wheel_list = build_weighted_wheel_titles(vote_totals)
+        sanitized_lines = build_sanitized_wheel_title_lines(list(dict.fromkeys(wheel_list)))
+
+        if sanitized_lines:
+            for chunk in chunk_lines("Sanitizing titles for Wheel of Names:\n", sanitized_lines):
+                await ctx.send(chunk)
+
         entries = build_wheel_entries(wheel_list)
-
-        url = "https://wheelofnames.com/api/v2/wheels"
-
-        wheel = {
-            "wheelConfig": {
-                    "displayWinnerDialog": True,
-                    "description": "First movie to 3 spins wins. Click 'Copy this Wheel' to customize.",
-                    "title": "Clumsy Movie Night",
-                    "allowDuplicates": True,
-                    "maxNames": 50,
-                    "entries": entries
-                },
-            "shareMode": "copyable"
-
-            }
+        wheel = build_wheel_payload(entries)
 
         headers = {
             'x-api-key': API_KEY,
@@ -301,49 +347,18 @@ class Voting(commands.Cog, name='1: Voting'):
             'Accept': 'application/json'
         }
 
-        response = requests.post(url, headers=headers, json=wheel)
+        response = requests.post(WHEEL_API_V3_URL, headers=headers, json=wheel)
 
-        if(response.status_code != 201):
-            nomination_messages = []
+        if(not response.ok):
             await ctx.send(response.status_code)
             await ctx.send(response.text)
             await ctx.send("Wheel List:\n")
 
-            async for message in channel.history(after=lastSaturday()):
-                nomination_messages.append({
-                    'content': message.content,
-                    'reaction_counts': [reaction.count for reaction in message.reactions]
-                })
-
-            vote_totals = calculate_vote_totals(nomination_messages, titles)
-
             for chunk in build_wheel_text_chunks(vote_totals):
                 await ctx.send(chunk)
         else:
-            await ctx.send("Submitted. Go to https://wheelofnames.com/" + response.json()['data']['path'])
+            await ctx.send("Submitted. Go to " + build_wheel_share_url(extract_wheel_path(response.json())))
 
-
-    @commands.command(brief='Prepare votes for the wheel, printing labels to channel', description='Generates a list for all movies that received at least one reaction since last rollover. Movie titles are duplicated according to number of votes.')
-    async def wheel2(self, ctx):
-
-        channel = client.get_channel(CHANNEL_ID)
-
-        # Create a text list of all movie titles, copied according to number of votes
-
-        nomination_messages = []
-
-        await ctx.send("Wheel List:\n")
-
-        async for message in channel.history(after=lastSaturday()):
-            nomination_messages.append({
-                'content': message.content,
-                'reaction_counts': [reaction.count for reaction in message.reactions]
-            })
-
-        vote_totals = calculate_vote_totals(nomination_messages, titles)
-
-        for chunk in build_wheel_text_chunks(vote_totals):
-            await ctx.send(chunk)
 
 
     @commands.command(brief='Send fallen list to wheel of names', description='Generates a list of movies from the fallen list. List is compiled into JSON and submitted to wheel of names application.')
@@ -352,60 +367,53 @@ class Voting(commands.Cog, name='1: Voting'):
         channel = client.get_channel(CHANNEL_ID)
 
         # Create a text list of all movie titles, copied according to number of votes
-        global fallen
-        wheel_list = fallen['Movie'].tolist()
+        global fallen_df
+        wheel_list = fallen_df['Movie'].tolist()
 
         await ctx.send("Preparing list for wheel of names...")
 
-        entries = []
-        for title in wheel_list:
-            entries.append({'text': title})
+        sanitized_lines = build_sanitized_wheel_title_lines(wheel_list)
 
-        url = "https://wheelofnames.com/api/v1/wheels/shared"
+        if sanitized_lines:
+            for chunk in chunk_lines("Sanitizing titles for Wheel of Names:\n", sanitized_lines):
+                await ctx.send(chunk)
 
-        wheel = {
-            "wheelConfig": {
-                    "displayWinnerDialog": True,
-                    "description": "First movie to 3 spins wins. Click 'Copy this Wheel' to customize.",
-                    "title": "Clumsy Movie Night",
-                    "allowDuplicates": True,
-                    "maxNames": 50,
-                    "entries": entries
-                },
-            "shareMode": "copyable"
-
-            }
+        entries = build_wheel_entries(wheel_list)
+        wheel = build_wheel_payload(entries)
 
         headers = {
             'Content-Type': 'application/json',
             'x-api-key': API_KEY
         }
 
-        response = requests.post(url, headers=headers, data=json.dumps(wheel))
+        response = requests.post(WHEEL_API_V3_URL, headers=headers, json=wheel)
 
-        if(response.status_code != 200):
+        if(not response.ok):
             await ctx.send(f"Something went wrong (Status: {response.status_code})")
+            await ctx.send(response.text)
         else:
-            await ctx.send("Submitted. Go to https://wheelofnames.com/" + response.json()['data']['path'])
+            await ctx.send("Submitted. Go to " + build_wheel_share_url(extract_wheel_path(response.json())))
 
 
     @commands.command(brief='Purge shared wheels', description='Deletes all shared wheels associated with API key')
     async def wheel_purge(self, ctx):
 
-        channel = client.get_channel(CHANNEL_ID)
-
         headers = {
             'Content-Type': 'application/json',
             'x-api-key': API_KEY
         }
 
-        response = requests.get('https://wheelofnames.com/api/v1/wheels/shared', headers=headers)
+        response = requests.get(WHEEL_API_V3_URL, headers=headers, params=build_list_wheels_params())
 
-        for element in response.json()['data']['wheels']:
-            path = element['path']
-            response = requests.delete(f'https://wheelofnames.com/api/v1/wheels/{path}', headers=headers)
+        if(not response.ok):
+            await ctx.send(f"Wheel list failed (Status: {response.status_code})")
+            await ctx.send(response.text)
+            return
 
-            if(response.status_code != 200):
+        for path in extract_wheel_paths(response.json()):
+            response = requests.delete(build_delete_wheel_url(path), headers=headers)
+
+            if(not response.ok):
                 await ctx.send(path + ' purge failed')
             else:
                 await ctx.send(path + ' purge complete')
@@ -424,17 +432,15 @@ class Voting(commands.Cog, name='1: Voting'):
     async def winner(self, ctx, index: int):
 
         global movies
-        global winners
+        global winners_df
         index = int(index) - 1
         imdb_id = ''
 
         try:
             movieID = movies[index]['id']
 
-            url = f"https://api.themoviedb.org/3/movie/{movieID}" 
-            headers = {
-                "Authorization": f"Bearer {TMDB_TOKEN}"
-            }
+            url = build_movie_details_url(movieID)
+            headers = build_auth_headers(TMDB_TOKEN)
             resp = requests.get(url=url, headers=headers)
             data = resp.json()
             imdb_id = data.get('imdb_id','')
@@ -446,8 +452,8 @@ class Voting(commands.Cog, name='1: Voting'):
         await ctx.send("Added to Permanent Movie List: " + movies[index]['title'])
 
         new_row = pd.DataFrame([{'title': movies[index]['title'], 'imdb_id': imdb_id, 'tmdb_id': movieID}])
-        winners = pd.concat([winners, new_row], ignore_index=True)
-        winners.to_csv('clumsy-movie-winners.csv', index = False)
+        winners_df = pd.concat([winners_df, new_row], ignore_index=True)
+        winners_df.to_csv('clumsy-movie-winners.csv', index = False)
 
 
     @commands.command(brief='List winners', description='Print the list of winners to be excluded from .rollover command')
@@ -467,21 +473,15 @@ class Voting(commands.Cog, name='1: Voting'):
     @commands.command(brief='Display past winners', description='Display a list of past winners')
     async def winners(self, ctx):
 
-        global winners
+        global winners_df
 
-        results = "Clumsy Movie Past Showings:\n"
+        lines = []
 
-        for i in range(len(winners)):
+        for i in range(len(winners_df)):
+            lines.append("[" + str(i+1) + "] " + winners_df.iloc[i]['title'] + "\n")
 
-            next_movie = "[" + str(i+1) + "] " + winners.iloc[i]['title'] + "\n"
-
-            if( len(results + next_movie) > 2000 ):
-                await ctx.send(results)
-                results = ""
-
-            results += next_movie
-
-        await ctx.send(results)
+        for chunk in chunk_lines("Clumsy Movie Past Showings:\n", lines):
+            await ctx.send(chunk)
 
 
 #     @commands.command(brief='Create a rollover list', description='Create a rollover list for the next week, with movies that have at least 1 vote. NOTE: Add winners to winner list first with winner command')
@@ -514,10 +514,7 @@ class Voting(commands.Cog, name='1: Voting'):
         # Grab rollover time just before writing rollover list
         rollover_time = datetime.utcnow().replace(tzinfo = pytz.utc)
 
-        global fallen
-
-        #test_channel = client.get_channel(TEST_ID)
-        #await test_channel.send("Next Week on the Wheel:")
+        global fallen_df
 
         await ctx.send("Next Week on the Wheel:")
         channel = client.get_channel(CHANNEL_ID)
@@ -547,10 +544,10 @@ class Voting(commands.Cog, name='1: Voting'):
 
         # To the fallen
 
-        movies = merge_fallen_titles(fallen['Movie'], fallen_list)
+        movies = merge_fallen_titles(fallen_df['Movie'], fallen_list)
 
-        fallen = pd.DataFrame(movies, columns = ['Movie'])
-        fallen.to_csv('fallen.csv', index=False)
+        fallen_df = pd.DataFrame(movies, columns = ['Movie'])
+        fallen_df.to_csv('fallen.csv', index=False)
 
         # Write rollover time to an external file
         time_pd = pd.DataFrame(data = {'Time': [rollover_time]})
@@ -560,23 +557,17 @@ class Voting(commands.Cog, name='1: Voting'):
     @commands.command(brief='Print the fallen list', description='Print a list of previously nominated movies that held votes from 0 or 1 voters at the time they were removed.')
     async def fallen(self, ctx):
 
-        global fallen
+        global fallen_df
 
-        movies = list(fallen['Movie'])
+        movies = list(fallen_df['Movie'])
 
-        results = "The Fallen:\n"
+        lines = []
 
         for i in range(len(movies)):
+            lines.append("[" + str(i+1) + "] " + movies[i] + "\n")
 
-            next_movie = "[" + str(i+1) + "] " + movies[i] + "\n"
-
-            if( len(results + next_movie) > 2000 ):
-                await ctx.send(results)
-                results = ""
-
-            results += next_movie
-
-        await ctx.send(results)
+        for chunk in chunk_lines("The Fallen:\n", lines):
+            await ctx.send(chunk)
 
         with open('./discord-images/fallen.jpg', 'rb') as f:
             file = io.BytesIO(f.read())
@@ -591,9 +582,9 @@ class Voting(commands.Cog, name='1: Voting'):
     @commands.command(brief='Random movie from The Fallen', description='Shuffle The Fallen list and randomly select a movie')
     async def random_fallen(self, ctx):
 
-        global fallen
+        global fallen_df
 
-        movies = list(fallen['Movie'])
+        movies = list(fallen_df['Movie'])
         movie_index = random.randint(0, len(movies)-1)
 
         await ctx.send(f"[{movie_index+1}] {movies[movie_index]}")
@@ -603,17 +594,15 @@ class Voting(commands.Cog, name='1: Voting'):
     async def remove_fallen(self, ctx, index):
 
         try:
-            global fallen
+            global fallen_df
             index = int(index) - 1
 
-            movies = list(fallen['Movie'])
+            movies = list(fallen_df['Movie'])
             movie = movies.pop(index)
 
-            fallen = movies
-
             # Sort remaining movies and write back to The Fallen
-            fallen = pd.DataFrame(fallen, columns = ['Movie'])
-            fallen.to_csv('fallen.csv',index=False)
+            fallen_df = pd.DataFrame(movies, columns = ['Movie'])
+            fallen_df.to_csv('fallen.csv',index=False)
 
             await ctx.send(f"Removed from The Fallen: {movie}")
 
@@ -628,16 +617,18 @@ class Voting(commands.Cog, name='1: Voting'):
         # Grab rollover time just before writing rollover list
         rollover_time = datetime.utcnow().replace(tzinfo = pytz.utc)
 
+        global holdover_df
+
         channel = client.get_channel(CHANNEL_ID)
 
-        holdover_list = []
+        nomination_messages = []
 
         async for message in channel.history(after=lastSaturday()):
-            if len(message.reactions) > 0 and message.content not in titles:
-                holdover_list.append(message.content)
+            nomination_messages.append(message_to_vote_record(message))
 
-        hold_df = pd.DataFrame(sorted(holdover_list), columns = ['Movie'])
-        hold_df.to_csv('holdover.csv', index=False)
+        holdover_list = build_holdover_titles(nomination_messages, titles)
+        holdover_df = pd.DataFrame(holdover_list, columns = ['Movie'])
+        holdover_df.to_csv('holdover.csv', index=False)
 
         # Write rollover time to an external file
         time_pd = pd.DataFrame(data = {'Time': [rollover_time]})
@@ -650,7 +641,7 @@ class Voting(commands.Cog, name='1: Voting'):
     @commands.command(brief='Print a holdover list', description='Print a list of movies held over from prior weeks. Used when a list of movies is held over for a later date in lieu of special event spins (e.g. Halloween)')
     async def print_holdover(self, ctx):
 
-        global holdover
+        global holdover_df
 
         # Grab rollover time just before writing rollover list
         rollover_time = datetime.utcnow().replace(tzinfo = pytz.utc)
@@ -661,7 +652,7 @@ class Voting(commands.Cog, name='1: Voting'):
 
         await ctx.send("Next Week on the Wheel:")
 
-        for movie in list(holdover['Movie']):
+        for movie in list(holdover_df['Movie']):
             await ctx.send(movie)
 
 
@@ -755,14 +746,15 @@ class Voting(commands.Cog, name='1: Voting'):
                 ax[i,j].yaxis.set_tick_params(labelleft=False, colors="white")
                 ax[i,j].text(0.5,0.5, bingo_card[i][j], ha="center", va="center", fontsize=12, wrap=True)
 
-        plt.savefig("./discord-images/scorecard.jpg")
+        fig.savefig("./discord-images/scorecard.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
-        with open('./discord-images/scorecard.jpg', 'rb') as f:
+        with open('./discord-images/scorecard.png', 'rb') as f:
             file = io.BytesIO(f.read())
 
-        image = discord.File(file, filename='scorecard.jpg')
+        image = discord.File(file, filename='scorecard.png')
         embed = discord.Embed(title = f'Scorecard for {username}')
-        embed.set_image(url=f'attachment://scorecard.jpg')
+        embed.set_image(url=f'attachment://scorecard.png')
 
         await ctx.send(file=image, embed=embed)
 
@@ -788,25 +780,14 @@ class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
 
         await ctx.send("One moment please...")
 
-        query = quote(title)
-        url = f'https://api.themoviedb.org/3/search/movie?query={query}'
-        headers = {
-            "Authorization": f"Bearer {TMDB_TOKEN}"
-        }
+        url = build_search_movie_url(title)
+        headers = build_auth_headers(TMDB_TOKEN)
         resp = requests.get(url=url, headers=headers)
 
         try:
             data = resp.json()
-            results = "Top 10 Search Results from TMDB:\n"
-            for index, movie in enumerate(data['results'][:10]):
-                title = f"{movie.get('title', 'N/A')} ({movie.get('release_date', 'N/A')[:4]})"
-                movie_dict = {
-                    'title': title,
-                    'id': movie.get('id','')
- 
-                }
-                movies.append(movie_dict)
-                results += "[" + str(index+1) + "] " + title + "\n"  
+            movies = parse_search_results(data)
+            results = format_search_results_message(movies)
         except Exception as e:
             results = f"Error (Status Code: {resp.status_code}): {e}"
 
@@ -822,10 +803,8 @@ class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
             index = int(index) - 1
             movieID = movies[index]['id']
 
-            url = f'https://api.themoviedb.org/3/movie/{movieID}'
-            headers = {
-                "Authorization": f"Bearer {TMDB_TOKEN}"
-            }
+            url = build_movie_details_url(movieID)
+            headers = build_auth_headers(TMDB_TOKEN)
             resp = requests.get(url=url, headers=headers)
             movie = resp.json()
 
@@ -836,34 +815,16 @@ class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
             await ctx.send(f"Error (Status Code: {resp.status_code}): {e}")
             return
 
-        title = movie.get('title', 'Unavailable')
-        description = movie.get('overview', ["Unavailable"])
-        release_date = str(movie.get('release_date', 'N/A'))
-        runtime = str(movie.get('runtime','N/A'))
-        poster_path = movie.get('poster_path','')
-
-        embed = discord.Embed(title = title,
-                              description = description,
-                             colour = discord.Colour.blue(),
-                             url = f"https://www.themoviedb.org/movie/{movieID}")
-
-        embed.add_field(name = 'Release Date', value = release_date, inline = True)
-        embed.add_field(name = 'Runtime (min)', value = runtime, inline = True)
-
-        if (poster_path != '') and (poster_path is not None):
-            try:
-                embed_url = "https://image.tmdb.org/t/p/original" + poster_path
-                embed.set_image(url=embed_url)
-            except KeyError:
-                pass
+        summary = parse_movie_summary(movie)
+        embed = build_tmdb_embed(movieID, summary)
 
         await ctx.send(embed=embed)
 
 
     @commands.command(brief = 'Select random B-movie from TMDB Top 1000', description = '')
     async def random(self, ctx):
-        global bmovies
-        bmovie_ids = bmovies['ID'].values
+        global bmovies_df
+        bmovie_ids = bmovies_df['ID'].values
 
         while True:
             index = random.randint(0,len(bmovie_ids)-1)
@@ -871,10 +832,8 @@ class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
 
             try:
 
-                url = f'https://api.themoviedb.org/3/find/{movieID}'
-                headers = {
-                    "Authorization": f"Bearer {TMDB_TOKEN}"
-                }
+                url = build_find_by_imdb_id_url(movieID)
+                headers = build_auth_headers(TMDB_TOKEN)
                 params = {
                     "external_source": "imdb_id",
                     "language": "en-US"
@@ -882,8 +841,8 @@ class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
                 resp = requests.get(url=url, headers=headers, params=params)
                 movie = resp.json()
 
-                movieID = movie['movie_results'][0]['id']
-                url = f'https://api.themoviedb.org/3/movie/{movieID}'
+                movieID = extract_first_movie_result_id(movie)
+                url = build_movie_details_url(movieID)
                 resp = requests.get(url=url, headers=headers)
                 movie = resp.json()
 
@@ -893,33 +852,11 @@ class TMDB_Queries(commands.Cog, name='2: TMDB Queries'):
                 await ctx.send(f"Error (Status Code: {resp.status_code}): {e}")
                 return
 
-            release_year = str(movie.get('release_date', 'N/A'))[:4]
-            release_year = release_year if release_year != 'N/A' else 0
-            adult = movie.get('adult',False)
-
-            if not adult and int(release_year) >= 1950:
+            if is_random_candidate_allowed(movie):
                 break
 
-        title = movie.get('title', 'Unavailable')
-        description = movie.get('overview', ["Unavailable"])
-        release_date = str(movie.get('release_date', 'N/A'))
-        runtime = str(movie.get('runtime','N/A'))
-        poster_path = movie.get('poster_path','')
-
-        embed = discord.Embed(title = title,
-                              description = description,
-                             colour = discord.Colour.blue(),
-                             url = f"https://www.themoviedb.org/movie/{movieID}")
-
-        embed.add_field(name = 'Release Date', value = release_date, inline = True)
-        embed.add_field(name = 'Runtime (min)', value = runtime, inline = True)
-
-        if poster_path != '':
-            try:
-                embed_url = "https://image.tmdb.org/t/p/original" + poster_path
-                embed.set_image(url=embed_url)
-            except KeyError:
-                pass
+        summary = parse_movie_summary(movie)
+        embed = build_tmdb_embed(movieID, summary)
 
         await ctx.send(embed=embed)
 
@@ -943,26 +880,18 @@ class Utility(commands.Cog, name='3: Utility'):
         sys.exit(0)
 
 
-    # For testing/debugging purposes
-
-    @commands.command(brief='Delete all messages', description='Removes last 1000 messages before current datetime (UTC) from test channel')
-    async def purge(self, ctx):
-        channel = client.get_channel(TEST_ID)
-
-        # Removes the last 1000 messages in channel
-        await channel.purge(limit = 1000, before = datetime.utcnow() + timedelta(1))
-
-
     @commands.command(brief='Print 5 sample movies', description='Prints 5 seperate messages with a movie name. Reactions should be added to movie title to register vote.')
     async def samples(self, ctx):
 
         # Create sample movie nominations with emoji reactions to simulate votes
 
-        m1 = await ctx.send("Lair of the White Worm")
-        m2 = await ctx.send("Hausu")
-        m3 = await ctx.send("Hackers")
-        m4 = await ctx.send("Earth Girls are Easy")
-        m5 = await ctx.send("50 Shades Darker")
+        channel = client.get_channel(CHANNEL_ID)
+
+        m1 = await channel.send("Lair of the White Worm")
+        m2 = await channel.send("Hausu")
+        m3 = await channel.send("Hackers")
+        m4 = await channel.send("Earth Girls are Easy")
+        m5 = await channel.send("50 Shades Darker")
 
         await m1.add_reaction('\U0001f44d')
         await m2.add_reaction('\U0001f44d')
@@ -997,6 +926,11 @@ async def on_ready():
     await channel.send(ready_msg)
 
 
-client.run(TOKEN)
+def main():
+    client.run(TOKEN)
+
+
+if __name__ == "__main__":
+    main()
 
 

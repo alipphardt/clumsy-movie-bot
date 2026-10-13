@@ -5,6 +5,13 @@ services so vote-counting behavior can be tested independently.
 """
 
 
+DEFAULT_OLDEST_EXCLUDED_TITLES = {
+    "Random b-movie (by bot)",
+    "Next Week on the Wheel:",
+    "Random movie from The Fallen List",
+}
+
+
 def calculate_vote_totals(messages, excluded_titles=None):
     """Return vote totals for reacted nominations.
 
@@ -37,6 +44,86 @@ def count_total_votes(messages, excluded_titles=None):
     return sum(vote_count for _, vote_count in calculate_vote_totals(messages, excluded_titles))
 
 
+def build_holdover_titles(messages, excluded_titles=None):
+    """Return sorted titles eligible for the holdover list.
+
+    Holdover eligibility matches vote-total eligibility: a nomination must have
+    at least one reaction and must not be in the excluded title list. Duplicate
+    nominations are preserved, matching the original handler behavior.
+    """
+    return sorted(title for title, _ in calculate_vote_totals(messages, excluded_titles))
+
+
+def count_movie_nominations(messages, excluded_titles=None):
+    """Return the count of movie nomination messages.
+
+    Movie count intentionally does not require reactions. Bot-generated rollover
+    nominations count as movie nominations. By default, only the rollover header
+    message is excluded.
+    """
+    if excluded_titles is None:
+        excluded_titles = {"Next Week on the Wheel:"}
+    else:
+        excluded_titles = set(excluded_titles)
+
+    return sum(1 for message in messages if message["content"] not in excluded_titles)
+
+
+def collect_current_nomination_titles(messages, excluded_titles=None):
+    """Return unique current nomination titles from message records.
+
+    This is used by the oldest-nominations command. It intentionally does not
+    require reactions; unvoted nominations still count as current nominations.
+    """
+    excluded_titles = set(excluded_titles or [])
+    current_titles = set()
+
+    for message in messages:
+        content = message["content"]
+
+        if content and content not in excluded_titles:
+            current_titles.add(content)
+
+    return current_titles
+
+
+def find_first_seen_titles(messages, current_titles):
+    """Return earliest timestamps for current titles from ordered messages.
+
+    ``messages`` should be supplied in oldest-first order. Each message record
+    must contain ``content`` and ``created_at`` keys.
+    """
+    current_titles = set(current_titles)
+    first_seen = {}
+
+    for message in messages:
+        content = message["content"]
+
+        if content in current_titles and content not in first_seen:
+            first_seen[content] = message["created_at"]
+
+        if len(first_seen) == len(current_titles):
+            break
+
+    return first_seen
+
+
+def top_oldest_titles(first_seen, limit=10):
+    """Return ``(title, timestamp)`` pairs sorted by oldest timestamp."""
+    return sorted(first_seen.items(), key=lambda x: x[1])[:limit]
+
+
+def format_oldest_title_lines(oldest_titles):
+    """Return Discord output lines for oldest-title results."""
+    lines = []
+
+    for i, (movie, timestamp) in enumerate(oldest_titles):
+        date_str = timestamp.strftime("%Y-%m-%d")
+        lines.append(f"[{i+1}] {movie} (first seen: {date_str})\n")
+
+    return lines
+
+
 def build_weighted_wheel_titles(vote_totals):
     """Return movie titles repeated once per vote.
 
@@ -56,20 +143,10 @@ def build_weighted_wheel_titles(vote_totals):
     return weighted_titles
 
 
-def build_wheel_entries(weighted_titles):
-    """Return Wheel of Names entry dictionaries for weighted titles."""
-    entries = []
-
-    for title in weighted_titles:
-        entries.append({'text': title})
-
-    return entries
-
-
 def build_wheel_text_chunks(vote_totals, max_length=2000):
     """Return Discord message chunks for a text wheel list.
 
-    This preserves the existing .wheel2/fallback behavior: each movie is added
+    This preserves the existing .wheel fallback behavior: each movie is added
     as a repeated block of ``"<title>\n"`` lines, and the current chunk is
     emitted when adding the next block would make its length greater than or
     equal to ``max_length``.
